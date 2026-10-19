@@ -76,7 +76,29 @@ async function generateContentWithFallback(params: any): Promise<{ response: any
       return { response, modelUsed: model };
     } catch (err: any) {
       lastError = err;
-      const status = err?.status || err?.code || 'UNKNOWN';
+      const rawStatus = err?.status ?? err?.code ?? err?.statusCode;
+      const numStatus = Number(rawStatus);
+      const codeStr = String(rawStatus || '').toUpperCase();
+      const msg = String(err?.message || '');
+
+      // Directive 6 Error Recovery Matrix: Only 503, 429, 404, and 500 are recoverable
+      const isRecoverable =
+        [503, 429, 404, 500].includes(numStatus) ||
+        ['UNAVAILABLE', 'RESOURCE_EXHAUSTED', 'NOT_FOUND', 'INTERNAL'].includes(codeStr) ||
+        (
+          !msg.includes('400') &&
+          !msg.includes('INVALID_ARGUMENT') &&
+          (msg.includes('503') || msg.includes('429') || msg.includes('404') || msg.includes('500') ||
+           msg.includes('UNAVAILABLE') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('INTERNAL'))
+        );
+
+      if (!isRecoverable) {
+        const status = rawStatus || (msg.includes('400') || msg.includes('INVALID_ARGUMENT') ? 400 : 'ERROR');
+        console.log(`[fallback] ${model} failed (${status}: ${err?.message || err}) -> non-recoverable error, stopping fallback`);
+        throw err;
+      }
+
+      const status = rawStatus || 'RECOVERABLE_ERROR';
       const nextModel = MODEL_LADDER[i + 1] || 'exhausted';
       console.log(`[fallback] ${model} failed (${status}: ${err?.message || err}) -> trying ${nextModel}`);
     }
@@ -187,23 +209,48 @@ async function firestoreSet(docPath: string, dataObj: any, token: string) {
   return await res.json();
 }
 
-async function firestoreList(collectionPath: string, token: string) {
-  const url = `${firestoreBaseUrl()}/${collectionPath}?pageSize=300`;
+async function firestoreUpdate(docPath: string, dataObj: any, token: string) {
+  // Defensive: strip undefined values
+  const sanitized: Record<string, any> = {};
+  for (const [k, v] of Object.entries(dataObj)) {
+    if (v !== undefined) sanitized[k] = v;
+  }
+
+  const fields: Record<string, any> = {};
+  const queryParams = new URLSearchParams();
+  queryParams.append('currentDocument.exists', 'true');
+
+  for (const [k, v] of Object.entries(sanitized)) {
+    fields[k] = toFirestoreValue(v);
+    queryParams.append('updateMask.fieldPaths', k);
+  }
+
+  const url = `${firestoreBaseUrl()}/${docPath}?${queryParams.toString()}`;
   const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ fields }),
   });
   if (!res.ok) {
     const errText = await res.text();
     const cleanError = errText.slice(0, 300).replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi, 'Bearer [REDACTED]');
-    throw new Error(`${collectionPath} LIST failed [${res.status}]: ${cleanError}`);
+    throw new Error(`${docPath} UPDATE failed [${res.status}]: ${cleanError}`);
   }
-  const data = await res.json();
-  const docs = data.documents || [];
-  return docs.map(docToObj);
+  return await res.json();
 }
 
-async function firestoreRunQuery(structuredQuery: any, token: string, targetName = 'runQuery') {
-  const url = `${firestoreBaseUrl()}:runQuery`;
+async function firestoreRunQuery(
+  structuredQuery: any,
+  token: string,
+  targetName = 'runQuery',
+  parentPath?: string
+) {
+  const url = parentPath
+    ? `${firestoreBaseUrl()}/${parentPath}:runQuery`
+    : `${firestoreBaseUrl()}:runQuery`;
   const res = await fetch(url, {
     method: 'POST',
     headers: {
@@ -526,11 +573,25 @@ app.post('/api/chat', requireAuth, async (req: AuthenticatedRequest, res: Respon
     const selectedAreaIds: string[] = sessionDoc.selectedAuditAreaIds || [];
     const sessionAreas = activeAreas.filter((a: any) => selectedAreaIds.includes(a.id));
 
-    // 4. Load Conversation History from Firestore
-    const interactions = await firestoreList(`users/${user.uid}/interactions`, user.token);
-    const sessionInteractions = interactions
-      .filter((i: any) => i.sessionId === sessionId)
-      .sort((a: any, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    // 4. Load Conversation History from Firestore via firestoreRunQuery
+    const sessionInteractions = await firestoreRunQuery(
+      {
+        from: [{ collectionId: 'interactions' }],
+        where: {
+          fieldFilter: {
+            field: { fieldPath: 'sessionId' },
+            op: 'EQUAL',
+            value: { stringValue: sessionId },
+          },
+        },
+      },
+      user.token,
+      `users/${user.uid}/interactions`,
+      `users/${user.uid}`
+    );
+    sessionInteractions.sort(
+      (a: any, b: any) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime()
+    );
 
     // 5. Save incoming User message to Firestore (Directive 6: transaction completeness)
     const nowIso = new Date().toISOString();
@@ -679,7 +740,7 @@ INTERVIEW RULES:
           const allowedStages = ['ProcessWalkthrough', 'Difficulties', 'Complaints', 'RootCauses', 'Suggestions', 'Recap'];
           const validStage = allowedStages.includes(args?.stage) ? args.stage : currentStage;
           currentStage = validStage;
-          await firestoreSet(`users/${user.uid}/sessions/${sessionId}`, {
+          await firestoreUpdate(`users/${user.uid}/sessions/${sessionId}`, {
             stage: validStage,
             updatedAt: new Date().toISOString(),
           }, user.token);
@@ -716,7 +777,7 @@ INTERVIEW RULES:
           sessionSummary = String(args?.summary || 'TQM Process Audit completed.').slice(0, 10000);
           isCompleted = true;
           currentStage = 'Recap';
-          await firestoreSet(`users/${user.uid}/sessions/${sessionId}`, {
+          await firestoreUpdate(`users/${user.uid}/sessions/${sessionId}`, {
             summary: sessionSummary,
             status: 'completed',
             stage: 'Recap',
@@ -725,18 +786,37 @@ INTERVIEW RULES:
           result = { ok: true, isCompleted: true };
         }
 
+        const fnResponseObj: any = {
+          name,
+          response: result,
+        };
+        if (fnCall.id) {
+          fnResponseObj.id = fnCall.id;
+        }
+
         functionResponseParts.push({
-          functionResponse: {
-            name,
-            response: result,
-          },
+          functionResponse: fnResponseObj,
         });
       }
 
       contents.push({
-        role: 'tool',
+        role: 'user',
         parts: functionResponseParts,
       });
+    }
+
+    // 3. If the 4-round limit is reached and there is still no text reply, make one last call
+    // without tools so the agent always answers, and save that reply as usual.
+    if (!finalAgentReply) {
+      const { response: fallbackResponse, modelUsed: fallbackModel } = await generateContentWithFallback({
+        contents,
+        config: {
+          systemInstruction,
+          temperature: 0.7,
+        },
+      });
+      lastModelUsed = fallbackModel;
+      finalAgentReply = fallbackResponse.text || 'I have noted your inputs and updated the audit records. Please continue with the next details of your process.';
     }
 
     // Save final Agent response interaction to Firestore (Directive 6: transaction completeness)
@@ -861,14 +941,44 @@ app.post('/api/sessions/end', requireAuth, async (req: AuthenticatedRequest, res
     const session = await firestoreGet(`users/${user.uid}/sessions/${sessionId}`, user.token);
     if (!session) return res.status(404).json({ error: 'Session not found' });
 
-    // Load interactions and findings
-    const interactions = await firestoreList(`users/${user.uid}/interactions`, user.token);
-    const sessionInteractions = interactions
-      .filter((i: any) => i.sessionId === sessionId)
-      .sort((a: any, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    // Load interactions and findings via firestoreRunQuery
+    const sessionInteractions = await firestoreRunQuery(
+      {
+        from: [{ collectionId: 'interactions' }],
+        where: {
+          fieldFilter: {
+            field: { fieldPath: 'sessionId' },
+            op: 'EQUAL',
+            value: { stringValue: sessionId },
+          },
+        },
+      },
+      user.token,
+      `users/${user.uid}/interactions`,
+      `users/${user.uid}`
+    );
+    sessionInteractions.sort(
+      (a: any, b: any) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime()
+    );
 
-    const findings = await firestoreList(`users/${user.uid}/findings`, user.token);
-    const sessionFindings = findings.filter((f: any) => f.sessionId === sessionId);
+    const sessionFindings = await firestoreRunQuery(
+      {
+        from: [{ collectionId: 'findings' }],
+        where: {
+          fieldFilter: {
+            field: { fieldPath: 'sessionId' },
+            op: 'EQUAL',
+            value: { stringValue: sessionId },
+          },
+        },
+      },
+      user.token,
+      `users/${user.uid}/findings`,
+      `users/${user.uid}`
+    );
+    sessionFindings.sort(
+      (a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()
+    );
 
     // Generate summary via Gemini with fallback ladder
     const summaryPrompt = `
@@ -893,7 +1003,7 @@ Format the summary with:
 
     const summaryText = response.text || 'TQM Audit session concluded successfully.';
 
-    await firestoreSet(`users/${user.uid}/sessions/${sessionId}`, {
+    await firestoreUpdate(`users/${user.uid}/sessions/${sessionId}`, {
       status: 'completed',
       stage: 'Recap',
       summary: summaryText,
@@ -1063,9 +1173,8 @@ app.post('/api/reports/generate', requireAuth, async (req: AuthenticatedRequest,
     findingsFromDb.sort((a: any, b: any) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
     const recentFindings = findingsFromDb.slice(0, 500);
 
-    // 2. Query active audit areas from /auditAreas on the server
-    const allAreas = await firestoreList('auditAreas', user.token);
-    const activeAreas = (allAreas || []).filter((a: any) => a.isActive === true);
+    // 2. Query active audit areas from /auditAreas on the server via getActiveAuditAreas
+    const activeAreas = await getActiveAuditAreas(user.token);
 
     // 3. Extract only the fields the report needs
     const sanitizedFindings = recentFindings.map((f: any) => ({
