@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
+import { DEPARTMENTS, COMPANY_WIDE_DEPARTMENT } from './src/constants.ts';
 
 dotenv.config();
 
@@ -317,6 +318,62 @@ app.get('/api/me', requireAuth, (req: AuthenticatedRequest, res: Response) => {
     adminSetupNeeded: Boolean(req.adminSetupNeeded),
     roleDocPath: `/admins/${user.uid}`,
   });
+});
+
+// POST /api/profile: Validates and saves employee audit profile
+app.post('/api/profile', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const user = req.user!;
+  const body = (req.body && typeof req.body === 'object') ? req.body : {};
+  const { department, role, jobFunction, yearsInRole } = body;
+
+  // Validation 1: Department must be strictly one of the five Infosoft DEPARTMENTS
+  const trimmedDept = typeof department === 'string' ? department.trim() : '';
+  if (!trimmedDept || !(DEPARTMENTS as readonly string[]).includes(trimmedDept)) {
+    return res.status(400).json({
+      error: `Invalid department "${department}". Department must be one of: ${DEPARTMENTS.join(', ')}.`,
+    });
+  }
+
+  // Validation 2: Years in role must be a whole number (integer) from 0 to 50
+  const parsedYears = Number(yearsInRole);
+  if (yearsInRole === undefined || yearsInRole === null || !Number.isInteger(parsedYears) || parsedYears < 0 || parsedYears > 50) {
+    return res.status(400).json({
+      error: 'Years in current role must be a whole number between 0 and 50.',
+    });
+  }
+
+  // Validation 3: Role and job function validation
+  const trimmedRole = typeof role === 'string' ? role.trim() : '';
+  if (!trimmedRole) {
+    return res.status(400).json({ error: 'Role/position is required.' });
+  }
+
+  const trimmedJobFunction = typeof jobFunction === 'string' ? jobFunction.trim() : '';
+  if (!trimmedJobFunction) {
+    return res.status(400).json({ error: 'Job function/description is required.' });
+  }
+
+  try {
+    const existing = (await firestoreGet(`users/${user.uid}`, user.token)) || {};
+    const updatedProfile = {
+      ...existing,
+      userId: user.uid,
+      displayName: user.displayName || existing.displayName || 'Infosoft Employee',
+      photoURL: existing.photoURL || '',
+      department: trimmedDept,
+      role: trimmedRole.slice(0, 128),
+      jobFunction: trimmedJobFunction.slice(0, 2000),
+      yearsInRole: parsedYears,
+      createdAt: existing.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    await firestoreSet(`users/${user.uid}`, updatedProfile, user.token);
+    res.json({ ok: true, profile: updatedProfile });
+  } catch (err: any) {
+    console.error('Failed to save profile on server:', err);
+    res.status(500).json({ error: err?.message || 'Failed to save profile.' });
+  }
 });
 
 // Tool Declarations for Gemini Function Calling
@@ -686,7 +743,9 @@ app.post('/api/sessions/start', requireAuth, async (req: AuthenticatedRequest, r
   const user = req.user!;
   try {
     const profile = await firestoreGet(`users/${user.uid}`, user.token);
-    const department = profile?.department || 'Operations';
+    const department = (profile?.department && (DEPARTMENTS as readonly string[]).includes(profile.department))
+      ? profile.department
+      : COMPANY_WIDE_DEPARTMENT;
     const role = profile?.role || 'Staff';
     const jobFunction = profile?.jobFunction || '';
 
@@ -694,21 +753,26 @@ app.post('/api/sessions/start', requireAuth, async (req: AuthenticatedRequest, r
     const allAreas = await firestoreList('auditAreas', user.token);
     const activeAreas = allAreas.filter((a: any) => a.isActive === true);
 
+    // Requirement 5: "Company-wide" areas are candidates for every user; other areas are candidates when their department equals the user's department.
+    const candidateAreas = activeAreas.filter((a: any) =>
+      a.department === COMPANY_WIDE_DEPARTMENT || a.department === department
+    );
+
     let selectedAreaIds: string[] = [];
     let selectedAreaNames: string[] = [];
 
-    if (activeAreas.length > 0) {
-      // Prompt Gemini to select the 1-3 most relevant active audit areas
+    if (candidateAreas.length > 0) {
+      // Prompt Gemini to select the 1-3 most relevant active audit areas based on role and job function
       const matchingPrompt = `
-You are matching an employee to 1-3 relevant TQM Audit Areas based on their role.
+You are matching an employee to 1-3 relevant TQM Audit Areas based on their role and job function.
 Employee Department: ${department}
 Employee Role: ${role}
 Job Function: ${jobFunction}
 
-Available Active Audit Areas:
-${JSON.stringify(activeAreas.map((a: any) => ({ id: a.id, name: a.name, department: a.department, description: a.description })))}
+Available Candidate Active Audit Areas:
+${JSON.stringify(candidateAreas.map((a: any) => ({ id: a.id, name: a.name, department: a.department, description: a.description })))}
 
-Select the 1 to 3 most relevant audit area IDs for this employee.
+Select the 1 to 3 most relevant audit area IDs for this employee based on their role and job function.
 Respond strictly in JSON format with an array of string IDs: ["id1", "id2"].
 `;
       try {
@@ -718,23 +782,18 @@ Respond strictly in JSON format with an array of string IDs: ["id1", "id2"].
         });
         const matched = JSON.parse(response.text || '[]');
         if (Array.isArray(matched) && matched.length > 0) {
-          selectedAreaIds = matched.slice(0, 3);
+          selectedAreaIds = matched.filter((id: string) => candidateAreas.some((c: any) => c.id === id)).slice(0, 3);
         }
       } catch (e) {
         console.warn('AI matching failed, falling back to heuristic matching', e);
       }
 
       if (selectedAreaIds.length === 0) {
-        // Fallback: match by department or take top 2
-        const deptMatches = activeAreas.filter((a: any) =>
-          a.department.toLowerCase().includes(department.toLowerCase()) ||
-          department.toLowerCase().includes(a.department.toLowerCase())
-        );
-        const candidates = deptMatches.length > 0 ? deptMatches : activeAreas;
-        selectedAreaIds = candidates.slice(0, 3).map((a: any) => a.id);
+        // Fallback: rank candidates by role/function or take top 3 candidates
+        selectedAreaIds = candidateAreas.slice(0, 3).map((a: any) => a.id);
       }
 
-      selectedAreaNames = activeAreas
+      selectedAreaNames = candidateAreas
         .filter((a: any) => selectedAreaIds.includes(a.id))
         .map((a: any) => a.name);
     }
@@ -858,6 +917,7 @@ app.post('/api/baseline/extract', requireAuth, async (req: AuthenticatedRequest,
 
     // 2. Prompt Gemini to extract structured Audit Areas from the baseline text
     // Treat baseline text strictly as untrusted DATA per Directive 8
+    const deptListFormatted = DEPARTMENTS.map((d) => `"${d}"`).join(', ');
     const extractionPrompt = `
 You are a senior TQM Lead Auditor.
 Analyze the following Infosoft company baseline document and extract structured "Audit Areas".
@@ -869,7 +929,7 @@ ${textContent.slice(0, 60000)}
 
 Extract a structured list of Audit Areas. For EACH audit area provide:
 - name: Clear name of the audit area (e.g. "Software Code Quality & Review")
-- department: Specific department (e.g. "Engineering", "Customer Support", "QA", "Operations")
+- department: Each area's department must be copied exactly as written in the document. Use one of the five Infosoft DEPARTMENTS (${deptListFormatted}), or "${COMPANY_WIDE_DEPARTMENT}" for sections that apply to all departments. Never invent or shorten department names.
 - description: Detailed summary of the workflow and quality objectives
 - standards: Array of string standards, retaining any formal numbers or codes such as "ENG-4.3", "SEC-2.1"
 - kpis: Array of specific key performance indicators or SLA targets
@@ -908,10 +968,15 @@ Return strictly JSON matching this structure:
     // Save extracted areas as Draft (isActive: false) with Draft badge
     for (const item of areasList) {
       const areaId = `area_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+      const rawDept = String(item.department || '').trim();
+      const normalizedDept = (DEPARTMENTS as readonly string[]).includes(rawDept) || rawDept === COMPANY_WIDE_DEPARTMENT
+        ? rawDept
+        : COMPANY_WIDE_DEPARTMENT;
+
       const areaObj = {
         areaId,
         name: String(item.name || 'Quality Process').slice(0, 256),
-        department: String(item.department || 'Operations').slice(0, 128),
+        department: normalizedDept,
         description: String(item.description || '').slice(0, 2000),
         standards: Array.isArray(item.standards) ? item.standards : [],
         kpis: Array.isArray(item.kpis) ? item.kpis : [],

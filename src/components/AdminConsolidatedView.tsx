@@ -295,14 +295,14 @@ export const AdminConsolidatedView: React.FC<AdminConsolidatedViewProps> = ({ on
   const maxCount = Math.max(...paretoData.map((d) => d.count), 5);
 
   // Department x Severity Matrix Preparation
-  const departments = Array.from(new Set(findings.map((f) => f.department || 'Operations'))).sort();
+  const departments = Array.from(new Set(findings.map((f) => f.department || 'Company-wide'))).sort();
   const matrix: Record<string, Record<SeverityLevel, number>> = {};
   departments.forEach((dept) => {
     matrix[dept] = { Low: 0, Medium: 0, High: 0, Critical: 0 };
   });
 
   findings.forEach((f) => {
-    const dept = f.department || 'Operations';
+    const dept = f.department || 'Company-wide';
     if (!matrix[dept]) {
       matrix[dept] = { Low: 0, Medium: 0, High: 0, Critical: 0 };
     }

@@ -19,6 +19,7 @@ import {
   FileCode,
 } from 'lucide-react';
 import { Modal } from './Modal';
+import { DEPARTMENTS, COMPANY_WIDE_DEPARTMENT } from '../constants';
 
 interface AdminBaselineProps {
   onError: (msg: string, retryFn?: () => void) => void;
@@ -561,12 +562,18 @@ export const AdminBaseline: React.FC<AdminBaselineProps> = ({ onError }) => {
               <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
                 Department
               </label>
-              <input
-                type="text"
+              <select
                 value={editDept}
                 onChange={(e) => setEditDept(e.target.value)}
-                className="w-full text-xs border border-slate-300 rounded-lg p-2.5 focus:ring-2 focus:ring-indigo-500"
-              />
+                className="w-full text-xs border border-slate-300 rounded-lg p-2.5 focus:ring-2 focus:ring-indigo-500 bg-white"
+              >
+                <option value={COMPANY_WIDE_DEPARTMENT}>{COMPANY_WIDE_DEPARTMENT}</option>
+                {DEPARTMENTS.map((dept) => (
+                  <option key={dept} value={dept}>
+                    {dept}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
 

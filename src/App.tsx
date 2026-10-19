@@ -10,6 +10,7 @@ import { AdminBaseline } from './components/AdminBaseline';
 import { AdminConsolidatedView } from './components/AdminConsolidatedView';
 import { ErrorToast } from './components/ErrorToast';
 import { AuditSession } from './types';
+import { DEPARTMENTS } from './constants';
 import {
   Bot,
   PlusCircle,
@@ -57,9 +58,15 @@ function MainApp() {
     setRetryCallback(() => retryFn);
   };
 
+  // Profile completeness check (must have valid Infosoft department)
+  const isDeptValid = Boolean(
+    profile?.department && (DEPARTMENTS as readonly string[]).includes(profile.department)
+  );
+  const profileIncomplete = !profile || !isDeptValid;
+
   // Start a new audit session
   const handleStartSession = async () => {
-    if (!profile) {
+    if (profileIncomplete) {
       setProfileModalOpen(true);
       return;
     }
@@ -363,9 +370,9 @@ function MainApp() {
 
       {/* Profile Setup Modal */}
       <ProfileSetupModal
-        isOpen={profileModalOpen || !profile}
+        isOpen={profileModalOpen || profileIncomplete}
         onClose={() => setProfileModalOpen(false)}
-        isFirstTime={!profile}
+        isFirstTime={profileIncomplete}
       />
 
       {/* Global Error Banner / Toast (Directive 6: Never fail silently, provide Retry Save) */}

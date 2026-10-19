@@ -137,28 +137,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const updateProfile = async (data: Partial<UserProfile>) => {
-    if (!user) throw new Error('Not authenticated');
-    const existing = profile || {
-      userId: user.uid,
-      displayName: user.displayName || 'Infosoft Employee',
-      photoURL: user.photoURL || '',
-      department: '',
-      role: '',
-      jobFunction: '',
-      yearsInRole: 0,
-      createdAt: new Date().toISOString(),
-    };
+    if (!user || !token) throw new Error('Not authenticated');
 
-    const updated = stripUndefined({
-      ...existing,
-      ...data,
-      userId: user.uid,
-      displayName: user.displayName || existing.displayName,
-      photoURL: user.photoURL || existing.photoURL,
-      updatedAt: new Date().toISOString(),
+    const res = await fetch('/api/profile', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(data),
     });
 
-    await setDoc(doc(db, 'users', user.uid), updated);
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || 'Failed to update profile');
+    }
   };
 
   return (
