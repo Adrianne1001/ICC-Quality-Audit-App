@@ -81,7 +81,8 @@ function MainApp() {
       });
 
       if (!res.ok) {
-        throw new Error('Failed to start new audit session');
+        const errorData = await res.json().catch(() => null);
+        throw new Error(errorData?.error || 'Failed to start new audit session');
       }
 
       const sessionData: AuditSession = await res.json();

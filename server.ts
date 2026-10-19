@@ -151,7 +151,8 @@ async function firestoreGet(docPath: string, token: string) {
   if (res.status === 404) return null;
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`Firestore GET failed [${res.status}]: ${errText}`);
+    const cleanError = errText.slice(0, 300).replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi, 'Bearer [REDACTED]');
+    throw new Error(`${docPath} GET failed [${res.status}]: ${cleanError}`);
   }
   const data = await res.json();
   return docToObj(data);
@@ -180,7 +181,8 @@ async function firestoreSet(docPath: string, dataObj: any, token: string) {
   });
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`Firestore SET failed [${res.status}]: ${errText}`);
+    const cleanError = errText.slice(0, 300).replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi, 'Bearer [REDACTED]');
+    throw new Error(`${docPath} SET failed [${res.status}]: ${cleanError}`);
   }
   return await res.json();
 }
@@ -192,14 +194,15 @@ async function firestoreList(collectionPath: string, token: string) {
   });
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`Firestore LIST failed [${res.status}]: ${errText}`);
+    const cleanError = errText.slice(0, 300).replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi, 'Bearer [REDACTED]');
+    throw new Error(`${collectionPath} LIST failed [${res.status}]: ${cleanError}`);
   }
   const data = await res.json();
   const docs = data.documents || [];
   return docs.map(docToObj);
 }
 
-async function firestoreRunQuery(structuredQuery: any, token: string) {
+async function firestoreRunQuery(structuredQuery: any, token: string, targetName = 'runQuery') {
   const url = `${firestoreBaseUrl()}:runQuery`;
   const res = await fetch(url, {
     method: 'POST',
@@ -211,7 +214,8 @@ async function firestoreRunQuery(structuredQuery: any, token: string) {
   });
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`Firestore runQuery failed [${res.status}]: ${errText}`);
+    const cleanError = errText.slice(0, 300).replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi, 'Bearer [REDACTED]');
+    throw new Error(`${targetName} query failed [${res.status}]: ${cleanError}`);
   }
   const data = await res.json();
   const results: any[] = [];
@@ -223,6 +227,32 @@ async function firestoreRunQuery(structuredQuery: any, token: string) {
     }
   }
   return results;
+}
+
+/**
+ * Reads active audit areas with user token via runQuery with isActive == true filter.
+ * Ensures non-admin users comply with firestore.rules without permission errors.
+ */
+async function getActiveAuditAreas(token: string): Promise<any[]> {
+  try {
+    return await firestoreRunQuery(
+      {
+        from: [{ collectionId: 'auditAreas' }],
+        where: {
+          fieldFilter: {
+            field: { fieldPath: 'isActive' },
+            op: 'EQUAL',
+            value: { booleanValue: true },
+          },
+        },
+      },
+      token,
+      'auditAreas'
+    );
+  } catch (err: any) {
+    console.error(`[Firestore Error] getActiveAuditAreas failed: ${err?.message || err}`);
+    throw err;
+  }
 }
 
 /**
@@ -489,9 +519,8 @@ app.post('/api/chat', requireAuth, async (req: AuthenticatedRequest, res: Respon
     // 2. Fetch User Profile
     const profileDoc = await firestoreGet(`users/${user.uid}`, user.token);
 
-    // 3. Fetch Active Audit Areas
-    const allAreas = await firestoreList('auditAreas', user.token);
-    const activeAreas = allAreas.filter((a: any) => a.isActive === true);
+    // 3. Fetch Active Audit Areas using filtered runQuery (isActive == true)
+    const activeAreas = await getActiveAuditAreas(user.token);
 
     // Filter to selected audit areas for this session
     const selectedAreaIds: string[] = sessionDoc.selectedAuditAreaIds || [];
@@ -749,9 +778,8 @@ app.post('/api/sessions/start', requireAuth, async (req: AuthenticatedRequest, r
     const role = profile?.role || 'Staff';
     const jobFunction = profile?.jobFunction || '';
 
-    // Fetch active Audit Areas
-    const allAreas = await firestoreList('auditAreas', user.token);
-    const activeAreas = allAreas.filter((a: any) => a.isActive === true);
+    // Fetch active Audit Areas using filtered runQuery (isActive == true)
+    const activeAreas = await getActiveAuditAreas(user.token);
 
     // Requirement 5: "Company-wide" areas are candidates for every user; other areas are candidates when their department equals the user's department.
     const candidateAreas = activeAreas.filter((a: any) =>
@@ -817,8 +845,9 @@ Respond strictly in JSON format with an array of string IDs: ["id1", "id2"].
     await firestoreSet(`users/${user.uid}/sessions/${sessionId}`, sessionData, user.token);
     res.json(sessionData);
   } catch (err: any) {
-    console.error('Session start error:', err);
-    res.status(500).json({ error: err?.message || 'Failed to start session' });
+    const errMsg = err?.message || 'Failed to start session';
+    console.error(`[API /sessions/start Error] ${errMsg}`);
+    res.status(500).json({ error: errMsg });
   }
 });
 
