@@ -1,0 +1,6 @@
+{
+  "name": "Infosoft Quality Audit Agent",
+  "description": "AI-powered Total Quality Management (TQM) process audit platform for Infosoft employees and super administrators.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,437 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile with TQM audit demographic information",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "The Firebase Auth UID of the user",
+          "maxLength": 128
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Public display name from Google Auth",
+          "maxLength": 128
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "Profile photo URL from Google Auth",
+          "maxLength": 512
+        },
+        "department": {
+          "type": "string",
+          "description": "Infosoft department name",
+          "maxLength": 128
+        },
+        "role": {
+          "type": "string",
+          "description": "Employee role or job position title",
+          "maxLength": 128
+        },
+        "jobFunction": {
+          "type": "string",
+          "description": "Detailed description of day-to-day job function and tasks",
+          "maxLength": 2000
+        },
+        "yearsInRole": {
+          "type": "number",
+          "description": "Number of years in current role"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Last update timestamp"
+        }
+      },
+      "required": ["userId", "displayName", "department", "role", "jobFunction", "yearsInRole"]
+    },
+    "Session": {
+      "title": "Session",
+      "description": "An interactive TQM audit session between user and the audit agent",
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "description": "Unique session ID",
+          "maxLength": 128
+        },
+        "userId": {
+          "type": "string",
+          "description": "The user owning this session",
+          "maxLength": 128
+        },
+        "stage": {
+          "type": "string",
+          "description": "Current interview stage in the TQM audit progression",
+          "enum": ["ProcessWalkthrough", "Difficulties", "Complaints", "RootCauses", "Suggestions", "Recap"],
+          "maxLength": 64
+        },
+        "selectedAuditAreaIds": {
+          "type": "array",
+          "description": "List of active Audit Area IDs matched for this session"
+        },
+        "selectedAuditAreaNames": {
+          "type": "array",
+          "description": "Human-readable names of the selected Audit Areas"
+        },
+        "status": {
+          "type": "string",
+          "description": "Session status (active or completed)",
+          "enum": ["active", "completed"],
+          "maxLength": 32
+        },
+        "summary": {
+          "type": "string",
+          "description": "Consolidated session summary generated upon completion",
+          "maxLength": 10000
+        },
+        "userDisplayName": {
+          "type": "string",
+          "description": "Snapshot of user display name for admin reporting",
+          "maxLength": 128
+        },
+        "userDepartment": {
+          "type": "string",
+          "description": "Snapshot of user department",
+          "maxLength": 128
+        },
+        "userRole": {
+          "type": "string",
+          "description": "Snapshot of user role",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Last update timestamp"
+        }
+      },
+      "required": ["sessionId", "userId", "stage", "status"]
+    },
+    "Interaction": {
+      "title": "Interaction",
+      "description": "A single chat prompt or agent response within an audit session",
+      "type": "object",
+      "properties": {
+        "interactionId": {
+          "type": "string",
+          "description": "Unique interaction ID",
+          "maxLength": 128
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "The session this interaction belongs to",
+          "maxLength": 128
+        },
+        "userId": {
+          "type": "string",
+          "description": "The user owning this interaction",
+          "maxLength": 128
+        },
+        "role": {
+          "type": "string",
+          "description": "Speaker role",
+          "enum": ["user", "agent"],
+          "maxLength": 16
+        },
+        "content": {
+          "type": "string",
+          "description": "The message text",
+          "maxLength": 20000
+        },
+        "modelUsed": {
+          "type": "string",
+          "description": "The Gemini model string that generated the response",
+          "maxLength": 64
+        },
+        "timestamp": {
+          "type": "string",
+          "description": "Timestamp of the interaction"
+        }
+      },
+      "required": ["sessionId", "userId", "role", "content"]
+    },
+    "Finding": {
+      "title": "Finding",
+      "description": "An identified quality process gap or finding recorded during an audit",
+      "type": "object",
+      "properties": {
+        "findingId": {
+          "type": "string",
+          "description": "Unique finding ID",
+          "maxLength": 128
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "The audit session ID where this finding was identified",
+          "maxLength": 128
+        },
+        "userId": {
+          "type": "string",
+          "description": "The user ID who reported this finding",
+          "maxLength": 128
+        },
+        "department": {
+          "type": "string",
+          "description": "The department context of the finding",
+          "maxLength": 128
+        },
+        "processArea": {
+          "type": "string",
+          "description": "Target process or workflow area",
+          "maxLength": 256
+        },
+        "ishikawaCategory": {
+          "type": "string",
+          "description": "Ishikawa 6M root-cause category",
+          "enum": ["Man", "Machine", "Method", "Material", "Measurement", "Environment"],
+          "maxLength": 32
+        },
+        "severity": {
+          "type": "string",
+          "description": "Severity level of the finding",
+          "enum": ["Low", "Medium", "High", "Critical"],
+          "maxLength": 32
+        },
+        "description": {
+          "type": "string",
+          "description": "Description of the quality issue",
+          "maxLength": 2000
+        },
+        "userQuote": {
+          "type": "string",
+          "description": "Direct quote or context from the employee",
+          "maxLength": 2000
+        },
+        "suggestedImprovement": {
+          "type": "string",
+          "description": "Suggested remedy or action item",
+          "maxLength": 2000
+        },
+        "relatedStandard": {
+          "type": "string",
+          "description": "Quality standard or SOP reference (e.g., ENG-4.3)",
+          "maxLength": 256
+        },
+        "status": {
+          "type": "string",
+          "description": "Status of the finding after employee review",
+          "enum": ["Pending", "Confirmed", "Edited", "Disputed"],
+          "maxLength": 32
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Last update timestamp"
+        }
+      },
+      "required": ["sessionId", "userId", "ishikawaCategory", "severity", "description", "status"]
+    },
+    "Admin": {
+      "title": "Admin",
+      "description": "Role document designating super admin privileges",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the super administrator",
+          "maxLength": 128
+        },
+        "role": {
+          "type": "string",
+          "description": "Role title (e.g. superadmin)",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Document creation timestamp"
+        }
+      },
+      "required": ["role"]
+    },
+    "CompanyBaseline": {
+      "title": "CompanyBaseline",
+      "description": "Infosoft company quality documentation and baseline chunks",
+      "type": "object",
+      "properties": {
+        "baselineId": {
+          "type": "string",
+          "description": "Unique baseline ID",
+          "maxLength": 128
+        },
+        "title": {
+          "type": "string",
+          "description": "Document title or filename",
+          "maxLength": 256
+        },
+        "sourceName": {
+          "type": "string",
+          "description": "Original file name or manual entry label",
+          "maxLength": 256
+        },
+        "chunkIndex": {
+          "type": "number",
+          "description": "Index of text chunk"
+        },
+        "totalChunks": {
+          "type": "number",
+          "description": "Total chunks for this document"
+        },
+        "textChunk": {
+          "type": "string",
+          "description": "Text content chunk strictly under 700KB",
+          "maxLength": 700000
+        },
+        "uploadedBy": {
+          "type": "string",
+          "description": "UID of admin who uploaded the document",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Upload timestamp"
+        }
+      },
+      "required": ["title", "textChunk", "uploadedBy"]
+    },
+    "AuditArea": {
+      "title": "AuditArea",
+      "description": "Extracted TQM Audit Area with associated standards and KPIs",
+      "type": "object",
+      "properties": {
+        "areaId": {
+          "type": "string",
+          "description": "Unique audit area ID",
+          "maxLength": 128
+        },
+        "name": {
+          "type": "string",
+          "description": "Name of the process or audit area",
+          "maxLength": 256
+        },
+        "department": {
+          "type": "string",
+          "description": "Applicable department",
+          "maxLength": 128
+        },
+        "description": {
+          "type": "string",
+          "description": "Detailed description of the area and workflow",
+          "maxLength": 2000
+        },
+        "standards": {
+          "type": "array",
+          "description": "List of quality standards, retaining codes like ENG-4.3"
+        },
+        "kpis": {
+          "type": "array",
+          "description": "List of key performance indicators or SLA targets"
+        },
+        "sourceExcerpt": {
+          "type": "string",
+          "description": "Excerpt from baseline text supporting this area",
+          "maxLength": 2000
+        },
+        "isActive": {
+          "type": "boolean",
+          "description": "Whether this audit area is active and usable by the audit agent"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Last update timestamp"
+        }
+      },
+      "required": ["name", "department", "description", "standards", "kpis", "isActive"]
+    },
+    "AuditReport": {
+      "title": "AuditReport",
+      "description": "Consolidated TQM audit synthesis report generated by Gemini",
+      "type": "object",
+      "properties": {
+        "reportId": {
+          "type": "string",
+          "description": "Unique report ID",
+          "maxLength": 128
+        },
+        "title": {
+          "type": "string",
+          "description": "Report title",
+          "maxLength": 256
+        },
+        "totalFindingsAnalyzed": {
+          "type": "number",
+          "description": "Number of findings synthesized"
+        },
+        "summary": {
+          "type": "string",
+          "description": "Executive summary of findings",
+          "maxLength": 5000
+        },
+        "fullMarkdown": {
+          "type": "string",
+          "description": "Full formatted Markdown report content",
+          "maxLength": 50000
+        },
+        "generatedBy": {
+          "type": "string",
+          "description": "UID of admin who initiated generation",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp"
+        }
+      },
+      "required": ["title", "fullMarkdown", "generatedBy"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile with TQM audit details"
+    },
+    "/users/{userId}/sessions/{sessionId}": {
+      "schema": "Session",
+      "description": "User audit sessions"
+    },
+    "/users/{userId}/interactions/{interactionId}": {
+      "schema": "Interaction",
+      "description": "Session chat messages between user and audit agent"
+    },
+    "/users/{userId}/findings/{findingId}": {
+      "schema": "Finding",
+      "description": "Quality findings and process gaps recorded for the user"
+    },
+    "/admins/{adminId}": {
+      "schema": "Admin",
+      "description": "Super admin role documents"
+    },
+    "/companyBaseline/{baselineId}": {
+      "schema": "CompanyBaseline",
+      "description": "Infosoft quality documentation text chunks"
+    },
+    "/auditAreas/{areaId}": {
+      "schema": "AuditArea",
+      "description": "TQM audit areas, standards, and KPIs"
+    },
+    "/auditReports/{reportId}": {
+      "schema": "AuditReport",
+      "description": "Consolidated executive audit reports"
+    }
+  }
+}

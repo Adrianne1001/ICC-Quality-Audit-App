@@ -1,0 +1,93 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny all access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Admins collection: a user may only get their own document to check their admin status; no client writes allowed
+    match /admins/{adminId} {
+      allow get: if isSignedIn() && isValidId(adminId) && request.auth.uid == adminId;
+      allow list, write: if false;
+    }
+
+    // User profile and subcollections: owner read/write, admin read-only
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create, update: if isValidId(userId) && isOwner(userId) && request.resource.data.userId == request.auth.uid;
+      allow delete: if isValidId(userId) && isOwner(userId);
+
+      // Sessions
+      match /sessions/{sessionId} {
+        allow get: if isValidId(userId) && isValidId(sessionId) && (isOwner(userId) || isAdmin());
+        allow list: if isValidId(userId) && (isOwner(userId) || isAdmin());
+        allow create, update: if isValidId(userId) && isValidId(sessionId) && isOwner(userId) && request.resource.data.userId == request.auth.uid;
+        allow delete: if isValidId(userId) && isValidId(sessionId) && isOwner(userId);
+      }
+
+      // Interactions (chat transcript)
+      match /interactions/{interactionId} {
+        allow get: if isValidId(userId) && isValidId(interactionId) && (isOwner(userId) || isAdmin());
+        allow list: if isValidId(userId) && (isOwner(userId) || isAdmin());
+        allow create, update: if isValidId(userId) && isValidId(interactionId) && isOwner(userId) && request.resource.data.userId == request.auth.uid;
+        allow delete: if isValidId(userId) && isValidId(interactionId) && isOwner(userId);
+      }
+
+      // Findings
+      match /findings/{findingId} {
+        allow get: if isValidId(userId) && isValidId(findingId) && (isOwner(userId) || isAdmin());
+        allow list: if isValidId(userId) && (isOwner(userId) || isAdmin());
+        allow create, update: if isValidId(userId) && isValidId(findingId) && isOwner(userId) && request.resource.data.userId == request.auth.uid;
+        allow delete: if isValidId(userId) && isValidId(findingId) && isOwner(userId);
+      }
+    }
+
+    // Collection group queries for Super Admin consolidated view
+    match /{path=**}/findings/{findingId} {
+      allow read: if isAdmin();
+    }
+    match /{path=**}/sessions/{sessionId} {
+      allow read: if isAdmin();
+    }
+    match /{path=**}/interactions/{interactionId} {
+      allow read: if isAdmin();
+    }
+
+    // Company Baseline documents: Super Admin only
+    match /companyBaseline/{baselineId} {
+      allow read, write: if isValidId(baselineId) && isAdmin();
+    }
+
+    // Audit Areas: All signed-in users can read active areas (isActive == true); Admin can read/write all
+    match /auditAreas/{areaId} {
+      allow get: if isValidId(areaId) && isSignedIn() && (resource.data.isActive == true || isAdmin());
+      allow list: if isSignedIn() && (resource.data.isActive == true || isAdmin());
+      allow write: if isValidId(areaId) && isAdmin();
+    }
+
+    // Audit Reports: Super Admin only
+    match /auditReports/{reportId} {
+      allow read, write: if isValidId(reportId) && isAdmin();
+    }
+  }
+}
