@@ -65,6 +65,25 @@ export const AdminConsolidatedView: React.FC<AdminConsolidatedViewProps> = ({ on
   // Session read-only inspection modal
   const [inspectingSession, setInspectingSession] = useState<AuditSession | null>(null);
 
+  const formatPhTime = (dateStr?: string) => {
+    if (!dateStr) return '';
+    try {
+      return (
+        new Intl.DateTimeFormat('en-PH', {
+          timeZone: 'Asia/Manila',
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12: true,
+        }).format(new Date(dateStr)) + ' (PHT)'
+      );
+    } catch {
+      return new Date(dateStr).toLocaleString();
+    }
+  };
+
   // Load each admin query separately per Directive 8 requirement
   useEffect(() => {
     if (!user) return;
@@ -754,7 +773,7 @@ export const AdminConsolidatedView: React.FC<AdminConsolidatedViewProps> = ({ on
                   <div className="flex items-center gap-3 text-slate-500 text-[11px]">
                     <span className="flex items-center gap-1">
                       <Calendar className="w-3.5 h-3.5" />
-                      {new Date(rep.createdAt).toLocaleString()}
+                      {rep.generatedAtPh || formatPhTime(rep.createdAt)}
                     </span>
                     <span>&bull;</span>
                     <span>Analyzed {rep.totalFindingsAnalyzed} employee findings</span>
@@ -793,7 +812,7 @@ export const AdminConsolidatedView: React.FC<AdminConsolidatedViewProps> = ({ on
           <div className="space-y-4">
             <div className="flex items-center justify-between bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs">
               <span className="text-slate-500">
-                Generated: {new Date(activeReportModal.createdAt).toLocaleString()} &bull; Total Findings:{' '}
+                Generated: {activeReportModal.generatedAtPh || formatPhTime(activeReportModal.createdAt)} &bull; Total Findings:{' '}
                 {activeReportModal.totalFindingsAnalyzed}
               </span>
               <div className="flex items-center gap-2">

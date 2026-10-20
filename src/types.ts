@@ -99,10 +99,12 @@ export interface AuditReport {
   reportId: string;
   title: string;
   totalFindingsAnalyzed: number;
+  computedStats?: any;
   summary: string;
   fullMarkdown: string;
   generatedBy: string;
   createdAt: string;
+  generatedAtPh?: string;
 }
 
 export interface MeResponse {
