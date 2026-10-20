@@ -42,6 +42,10 @@ export const AdminBaseline: React.FC<AdminBaselineProps> = ({ onError }) => {
   const [editStandardsText, setEditStandardsText] = useState('');
   const [editKpisText, setEditKpisText] = useState('');
 
+  // Delete Drafts Modal State (admin only)
+  const [showDeleteDraftsModal, setShowDeleteDraftsModal] = useState(false);
+  const [isDeletingDrafts, setIsDeletingDrafts] = useState(false);
+
   // Subscribe to all audit areas (Admin has read permission for all areas)
   useEffect(() => {
     if (!user) return;
@@ -220,6 +224,39 @@ export const AdminBaseline: React.FC<AdminBaselineProps> = ({ onError }) => {
     } catch (err: any) {
       console.error('Failed to activate all areas:', err);
       onError(err?.message || 'Failed to activate all audit areas', activateAllAreas);
+    }
+  };
+
+  const handleDeleteAllDrafts = async () => {
+    setIsDeletingDrafts(true);
+    try {
+      if (token) {
+        const res = await fetch('/api/baseline/drafts', {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || 'Failed to delete drafts on server');
+        }
+        const data = await res.json();
+        setExtractSuccess(`Deleted ${data.deletedCount ?? 0} draft audit areas successfully.`);
+      } else {
+        const drafts = auditAreas.filter((a) => !a.isActive);
+        for (const area of drafts) {
+          const areaId = area.id || area.areaId;
+          await deleteDoc(doc(db, 'auditAreas', areaId));
+        }
+        setExtractSuccess(`Deleted ${drafts.length} draft audit areas successfully.`);
+      }
+      setShowDeleteDraftsModal(false);
+    } catch (err: any) {
+      console.error('Failed to delete all drafts:', err);
+      onError(err?.message || 'Failed to delete all drafts', handleDeleteAllDrafts);
+    } finally {
+      setIsDeletingDrafts(false);
     }
   };
 
@@ -412,13 +449,22 @@ export const AdminBaseline: React.FC<AdminBaselineProps> = ({ onError }) => {
             </div>
 
             {draftCount > 0 && (
-              <button
-                onClick={activateAllAreas}
-                className="inline-flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium rounded-lg transition-colors shadow-xs"
-              >
-                <CheckCheck className="w-3.5 h-3.5" />
-                Activate All
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowDeleteDraftsModal(true)}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-medium rounded-lg transition-colors shadow-xs"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Delete all Drafts
+                </button>
+                <button
+                  onClick={activateAllAreas}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium rounded-lg transition-colors shadow-xs"
+                >
+                  <CheckCheck className="w-3.5 h-3.5" />
+                  Activate All
+                </button>
+              </div>
             )}
           </div>
         </div>
@@ -625,6 +671,54 @@ export const AdminBaseline: React.FC<AdminBaselineProps> = ({ onError }) => {
               className="px-4 py-2 text-xs font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg shadow-xs"
             >
               Save Audit Area
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Delete All Drafts Confirmation Modal (Requirement 3: in-app modal, no window.confirm) */}
+      <Modal
+        isOpen={showDeleteDraftsModal}
+        onClose={() => setShowDeleteDraftsModal(false)}
+        title="Delete All Draft Audit Areas"
+        maxWidth="max-w-md"
+      >
+        <div className="space-y-4">
+          <div className="p-3 bg-rose-50 border border-rose-200 text-rose-900 text-xs rounded-xl flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-semibold">Confirm Draft Deletion</p>
+              <p className="mt-0.5 text-rose-800">
+                Are you sure you want to delete all <strong>{draftCount}</strong> draft audit areas? This action cannot be undone. Active audit areas will not be affected.
+              </p>
+            </div>
+          </div>
+          <div className="flex justify-end gap-3 pt-2">
+            <button
+              type="button"
+              disabled={isDeletingDrafts}
+              onClick={() => setShowDeleteDraftsModal(false)}
+              className="px-4 py-2 text-xs font-medium text-slate-600 hover:text-slate-800 rounded-lg"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={isDeletingDrafts}
+              onClick={handleDeleteAllDrafts}
+              className="px-4 py-2 text-xs font-medium bg-rose-600 hover:bg-rose-700 text-white rounded-lg shadow-xs flex items-center gap-1.5 disabled:opacity-50"
+            >
+              {isDeletingDrafts ? (
+                <>
+                  <span className="w-3.5 h-3.5 rounded-full border-2 border-white border-t-transparent animate-spin shrink-0" />
+                  <span>Deleting...</span>
+                </>
+              ) : (
+                <>
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Delete {draftCount} Drafts</span>
+                </>
+              )}
             </button>
           </div>
         </div>

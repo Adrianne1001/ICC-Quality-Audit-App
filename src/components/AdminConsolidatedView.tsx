@@ -818,10 +818,8 @@ export const AdminConsolidatedView: React.FC<AdminConsolidatedViewProps> = ({ on
               </div>
             </div>
 
-            <div className="bg-white border border-slate-200 rounded-xl p-6 max-h-[60vh] overflow-y-auto text-xs sm:text-sm font-sans leading-relaxed text-slate-800 space-y-4">
-              <div className="whitespace-pre-wrap font-mono text-xs bg-slate-50/50 p-4 rounded-lg border border-slate-100">
-                {activeReportModal.fullMarkdown}
-              </div>
+            <div className="bg-white border border-slate-200 rounded-xl p-6 max-h-[60vh] overflow-y-auto text-xs sm:text-sm font-sans leading-relaxed text-slate-800">
+              <SafeMarkdown content={activeReportModal.fullMarkdown} className="text-xs sm:text-sm text-slate-800 leading-relaxed" />
             </div>
           </div>
         )}
