@@ -311,25 +311,62 @@ export const AuditChat: React.FC<AuditChatProps> = ({ session, onSessionUpdated,
         </div>
       </div>
 
-      {/* New Findings Notification Banner */}
+      {/* New Findings Notification Banner: shows every finding saved in that turn (Requirement 4) */}
       {newFindingsAlert.length > 0 && (
-        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 flex items-center justify-between text-xs text-amber-900 animate-in slide-in-from-top-2">
-          <div className="flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-amber-600 shrink-0" />
-            <span>
-              <strong>TQM Finding Recorded:</strong> The agent logged{' '}
-              {newFindingsAlert.length === 1
-                ? `1 finding in [${newFindingsAlert[0].ishikawaCategory}]`
-                : `${newFindingsAlert.length} quality findings`}{' '}
-              for review in your Findings panel.
-            </span>
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-3 text-xs text-amber-950 animate-in slide-in-from-top-2 shadow-xs">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-2.5 flex-1 min-w-0">
+              <Sparkles className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+              <div className="space-y-1.5 flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-amber-900">
+                    {newFindingsAlert.length === 1
+                      ? 'Finding Recorded in this turn:'
+                      : `${newFindingsAlert.length} Findings Recorded in this turn:`}
+                  </span>
+                  <span className="text-[11px] text-amber-800">
+                    Saved with status Pending in My Findings
+                  </span>
+                </div>
+                <div className="space-y-1.5 mt-1">
+                  {newFindingsAlert.map((f, idx) => (
+                    <div
+                      key={f.findingId || idx}
+                      className="bg-white/90 border border-amber-200/90 rounded-lg p-2.5 text-slate-800 flex flex-col sm:flex-row sm:items-baseline gap-2 text-[11px] shadow-2xs"
+                    >
+                      <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
+                        {f.relatedStandard && f.relatedStandard !== 'No matching standard' ? (
+                          <span className="font-mono font-bold px-1.5 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded text-[10px]">
+                            {f.relatedStandard}
+                          </span>
+                        ) : (
+                          <span className="font-mono px-1.5 py-0.5 bg-slate-100 text-slate-600 border border-slate-200 rounded text-[10px]">
+                            No matching standard
+                          </span>
+                        )}
+                        <span className="px-1.5 py-0.5 bg-amber-100 text-amber-800 font-semibold rounded text-[10px]">
+                          {f.ishikawaCategory}
+                        </span>
+                        <span className="px-1.5 py-0.5 bg-slate-100 text-slate-700 font-medium rounded text-[10px]">
+                          {f.severity}
+                        </span>
+                        <span className="text-slate-500 font-medium">[{f.processArea}]</span>
+                      </div>
+                      <div className="text-slate-700 flex-1 min-w-0 leading-snug">
+                        {f.description}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={() => setNewFindingsAlert([])}
+              className="text-amber-800 hover:text-amber-950 font-medium text-xs underline shrink-0 ml-2"
+            >
+              Dismiss
+            </button>
           </div>
-          <button
-            onClick={() => setNewFindingsAlert([])}
-            className="text-amber-700 hover:text-amber-900 font-medium underline"
-          >
-            Dismiss
-          </button>
         </div>
       )}
 

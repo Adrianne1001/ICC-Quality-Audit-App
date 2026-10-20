@@ -75,7 +75,8 @@ service cloud.firestore {
 
     // Company Baseline documents: Super Admin only
     match /companyBaseline/{baselineId} {
-      allow read, write: if isValidId(baselineId) && isAdmin();
+      allow get, write: if isValidId(baselineId) && isAdmin();
+      allow list: if isAdmin();
     }
 
     // Audit Areas: All signed-in users can read active areas (isActive == true); Admin can read/write all
@@ -87,7 +88,8 @@ service cloud.firestore {
 
     // Audit Reports: Super Admin only
     match /auditReports/{reportId} {
-      allow read, write: if isValidId(reportId) && isAdmin();
+      allow get, write: if isValidId(reportId) && isAdmin();
+      allow list: if isAdmin();
     }
   }
 }
