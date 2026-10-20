@@ -19,6 +19,7 @@ import {
   Info,
 } from 'lucide-react';
 import { Modal } from './Modal';
+import { SafeMarkdown } from './SafeMarkdown';
 import { doc, onSnapshot, collection, query, orderBy, setDoc } from 'firebase/firestore';
 import { db, stripUndefined } from '../firebase';
 
@@ -358,7 +359,11 @@ export const AuditChat: React.FC<AuditChatProps> = ({ session, onSessionUpdated,
                     : 'bg-indigo-600 text-white rounded-tr-none'
                 }`}
               >
-                <div className="whitespace-pre-wrap">{msg.content}</div>
+                {isAgent ? (
+                  <SafeMarkdown content={msg.content} className="text-slate-800 text-sm" />
+                ) : (
+                  <div className="whitespace-pre-wrap">{msg.content}</div>
+                )}
 
                 <div
                   className={`mt-2 flex items-center justify-between text-[10px] ${
@@ -400,8 +405,8 @@ export const AuditChat: React.FC<AuditChatProps> = ({ session, onSessionUpdated,
               <CheckCircle2 className="w-5 h-5 text-emerald-600" />
               <span>Audit Session Complete &bull; Consolidated Summary</span>
             </div>
-            <div className="text-xs whitespace-pre-wrap leading-relaxed text-slate-700 bg-white/70 p-4 rounded-xl border border-emerald-100">
-              {session.summary}
+            <div className="bg-white/70 p-4 rounded-xl border border-emerald-100">
+              <SafeMarkdown content={session.summary} className="text-xs text-slate-700 leading-relaxed" />
             </div>
           </div>
         )}

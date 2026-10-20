@@ -28,6 +28,7 @@ import {
   User,
 } from 'lucide-react';
 import { Modal } from './Modal';
+import { SafeMarkdown } from './SafeMarkdown';
 
 interface AdminConsolidatedViewProps {
   onError: (msg: string, retryFn?: () => void) => void;
@@ -862,8 +863,8 @@ export const AdminConsolidatedView: React.FC<AdminConsolidatedViewProps> = ({ on
                   <Sparkles className="w-4 h-4 text-emerald-600" />
                   Session Summary
                 </h4>
-                <div className="whitespace-pre-wrap leading-relaxed text-slate-700 bg-white/70 p-3 rounded-lg border border-emerald-100">
-                  {inspectingSession.summary}
+                <div className="bg-white/70 p-3 rounded-lg border border-emerald-100">
+                  <SafeMarkdown content={inspectingSession.summary} className="text-xs text-slate-700 leading-relaxed" />
                 </div>
               </div>
             )}
@@ -929,7 +930,11 @@ export const AdminConsolidatedView: React.FC<AdminConsolidatedViewProps> = ({ on
                             : 'bg-indigo-600 text-white'
                         }`}
                       >
-                        <div className="whitespace-pre-wrap">{msg.content}</div>
+                        {isAgent ? (
+                          <SafeMarkdown content={msg.content} className="text-slate-800 text-xs" />
+                        ) : (
+                          <div className="whitespace-pre-wrap">{msg.content}</div>
+                        )}
                         <div
                           className={`mt-1 text-[9px] ${
                             isAgent ? 'text-slate-400' : 'text-indigo-200'
