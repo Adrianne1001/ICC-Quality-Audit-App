@@ -25,7 +25,7 @@ import { db, stripUndefined } from '../firebase';
 interface AuditChatProps {
   session: AuditSession;
   onSessionUpdated: (session: AuditSession) => void;
-  onError: (errorMsg: string, retryFn?: () => void) => void;
+  onError: (errorMsg: string, retryFn?: () => void, hasInputIntact?: boolean) => void;
 }
 
 const STAGES: { key: InterviewStage; label: string; desc: string }[] = [
@@ -97,6 +97,18 @@ export const AuditChat: React.FC<AuditChatProps> = ({ session, onSessionUpdated,
     };
   }, [user, session.sessionId]);
 
+  // UUID generator for idempotent clientMessageId
+  const generateUUID = (): string => {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      const v = c === 'x' ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
+  };
+
   // If newly created session has no messages, prompt initial agent greeting
   useEffect(() => {
     if (messages.length === 0 && !isSending && session.status === 'active' && token) {
@@ -104,18 +116,22 @@ export const AuditChat: React.FC<AuditChatProps> = ({ session, onSessionUpdated,
     }
   }, [session.sessionId]);
 
-  const sendMessage = async (customText?: string) => {
-    const textToSend = customText !== undefined ? customText : inputMessage.trim();
+  const sendMessage = async (customText?: string, existingClientMessageId?: string) => {
+    const isCustom = customText !== undefined;
+    const textToSend = isCustom ? customText : inputMessage.trim();
+
     if (textToSend.length > 2000) {
-      onError('Message exceeds 2,000 character limit.');
+      onError('Message exceeds 2,000 character limit.', undefined, true);
       return;
     }
 
-    if (customText === undefined && !textToSend) return;
+    if (!isCustom && !textToSend) return;
 
-    // Buffer the input in case of failure so user doesn't lose text
-    const bufferedInput = inputMessage;
-    if (customText === undefined) {
+    // Requirement 2: clientMessageId (crypto.randomUUID()) once per user message, reused on Retry
+    const clientMessageId = existingClientMessageId || generateUUID();
+
+    // Clear user typed input upon sending
+    if (!isCustom) {
       setInputMessage('');
     }
 
@@ -133,12 +149,34 @@ export const AuditChat: React.FC<AuditChatProps> = ({ session, onSessionUpdated,
           body: JSON.stringify({
             sessionId: session.sessionId,
             message: textToSend,
+            clientMessageId,
           }),
         });
 
         if (!res.ok) {
           const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.error || `Server responded with ${res.status}`);
+          console.error('Chat endpoint error response details:', res.status, errData);
+
+          const isBusy =
+            res.status === 503 ||
+            res.status === 429 ||
+            errData?.isBusy ||
+            String(errData?.error || '').includes('busy') ||
+            String(errData?.error || '').includes('503') ||
+            String(errData?.error || '').includes('429');
+
+          if (isBusy) {
+            const busyErr = new Error('The AI service is busy right now. Your message is saved. Click Retry in a few seconds.');
+            (busyErr as any).isBusy = true;
+            (busyErr as any).details = errData;
+            throw busyErr;
+          }
+
+          const rawError = errData?.error;
+          const cleanMsg = typeof rawError === 'string' && !rawError.trim().startsWith('{')
+            ? rawError
+            : `Server responded with ${res.status}`;
+          throw new Error(cleanMsg);
         }
 
         const data = await res.json();
@@ -147,13 +185,26 @@ export const AuditChat: React.FC<AuditChatProps> = ({ session, onSessionUpdated,
         }
       } catch (err: any) {
         console.error('Failed to send message:', err);
-        // Restore input buffer per Directive 6
-        if (customText === undefined) {
-          setInputMessage(bufferedInput);
-        }
-        onError(`Audit Agent communication failure: ${err?.message || 'Network error'}`, () => {
-          sendMessage(textToSend);
-        });
+
+        const isBusy =
+          err?.isBusy ||
+          err?.message?.includes('busy right now') ||
+          err?.message?.includes('503') ||
+          err?.message?.includes('429');
+
+        const toastMsg = isBusy
+          ? 'The AI service is busy right now. Your message is saved. Click Retry in a few seconds.'
+          : (err?.message || 'Audit Agent communication failure');
+
+        // Only say "your input remains intact" when the input box really still has the text.
+        // If the user's input was sent, inputMessage is cleared and the message is saved on server, so inputActuallyHasText is false.
+        const inputActuallyHasText = Boolean(inputMessage.trim().length > 0);
+
+        onError(
+          toastMsg,
+          () => sendMessage(textToSend, clientMessageId),
+          inputActuallyHasText
+        );
       } finally {
         setIsSending(false);
       }

@@ -56,54 +56,67 @@ const ai = new GoogleGenAI({
  */
 async function generateContentWithFallback(params: any): Promise<{ response: any; modelUsed: string }> {
   let lastError: any = null;
+  const maxPasses = 3;
+  const backoffDelays = [2000, 5000]; // After pass 1 wait 2s; after pass 2 wait 5s
 
-  for (let i = 0; i < MODEL_LADDER.length; i++) {
-    const model = MODEL_LADDER[i];
-    const isPrimary = i === 0;
+  for (let pass = 1; pass <= maxPasses; pass++) {
+    console.log(`[fallback] Pass ${pass}/${maxPasses} starting ladder execution...`);
 
-    if (isPrimary && forceModelFailure) {
-      console.log(`[fallback] ${model} failed (503 UNAVAILABLE [FORCE_MODEL_FAILURE]) -> trying ${MODEL_LADDER[i + 1] || 'none'}`);
-      lastError = new Error('503 UNAVAILABLE (Simulated via FORCE_MODEL_FAILURE)');
-      continue;
-    }
+    for (let i = 0; i < MODEL_LADDER.length; i++) {
+      const model = MODEL_LADDER[i];
+      const isPrimary = i === 0;
 
-    try {
-      const response = await ai.models.generateContent({
-        ...params,
-        model,
-      });
-      console.log(`[fallback] ${model} answered successfully`);
-      return { response, modelUsed: model };
-    } catch (err: any) {
-      lastError = err;
-      const rawStatus = err?.status ?? err?.code ?? err?.statusCode;
-      const numStatus = Number(rawStatus);
-      const codeStr = String(rawStatus || '').toUpperCase();
-      const msg = String(err?.message || '');
-
-      // Directive 6 Error Recovery Matrix: Only 503, 429, 404, and 500 are recoverable
-      const isRecoverable =
-        [503, 429, 404, 500].includes(numStatus) ||
-        ['UNAVAILABLE', 'RESOURCE_EXHAUSTED', 'NOT_FOUND', 'INTERNAL'].includes(codeStr) ||
-        (
-          !msg.includes('400') &&
-          !msg.includes('INVALID_ARGUMENT') &&
-          (msg.includes('503') || msg.includes('429') || msg.includes('404') || msg.includes('500') ||
-           msg.includes('UNAVAILABLE') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('INTERNAL'))
-        );
-
-      if (!isRecoverable) {
-        const status = rawStatus || (msg.includes('400') || msg.includes('INVALID_ARGUMENT') ? 400 : 'ERROR');
-        console.log(`[fallback] ${model} failed (${status}: ${err?.message || err}) -> non-recoverable error, stopping fallback`);
-        throw err;
+      if (isPrimary && forceModelFailure) {
+        console.log(`[fallback] Pass ${pass}: ${model} failed (503 UNAVAILABLE [FORCE_MODEL_FAILURE]) -> trying ${MODEL_LADDER[i + 1] || 'none'}`);
+        lastError = new Error('503 UNAVAILABLE (Simulated via FORCE_MODEL_FAILURE)');
+        continue;
       }
 
-      const status = rawStatus || 'RECOVERABLE_ERROR';
-      const nextModel = MODEL_LADDER[i + 1] || 'exhausted';
-      console.log(`[fallback] ${model} failed (${status}: ${err?.message || err}) -> trying ${nextModel}`);
+      try {
+        const response = await ai.models.generateContent({
+          ...params,
+          model,
+        });
+        console.log(`[fallback] Pass ${pass}: ${model} answered successfully`);
+        return { response, modelUsed: model };
+      } catch (err: any) {
+        lastError = err;
+        const rawStatus = err?.status ?? err?.code ?? err?.statusCode;
+        const numStatus = Number(rawStatus);
+        const codeStr = String(rawStatus || '').toUpperCase();
+        const msg = String(err?.message || '');
+
+        // Directive 6 Error Recovery Matrix: Only 503, 429, 404, and 500 are recoverable
+        const isRecoverable =
+          [503, 429, 404, 500].includes(numStatus) ||
+          ['UNAVAILABLE', 'RESOURCE_EXHAUSTED', 'NOT_FOUND', 'INTERNAL'].includes(codeStr) ||
+          (
+            !msg.includes('400') &&
+            !msg.includes('INVALID_ARGUMENT') &&
+            (msg.includes('503') || msg.includes('429') || msg.includes('404') || msg.includes('500') ||
+             msg.includes('UNAVAILABLE') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('INTERNAL'))
+          );
+
+        if (!isRecoverable) {
+          const status = rawStatus || (msg.includes('400') || msg.includes('INVALID_ARGUMENT') ? 400 : 'ERROR');
+          console.log(`[fallback] Pass ${pass}: ${model} failed (${status}: ${err?.message || err}) -> non-recoverable error, stopping fallback`);
+          throw err;
+        }
+
+        const status = rawStatus || 'RECOVERABLE_ERROR';
+        const nextModel = MODEL_LADDER[i + 1] || (pass < maxPasses ? `next pass in ${backoffDelays[pass - 1] / 1000}s` : 'exhausted');
+        console.log(`[fallback] Pass ${pass}: ${model} failed (${status}: ${err?.message || err}) -> trying ${nextModel}`);
+      }
+    }
+
+    if (pass < maxPasses) {
+      const waitTime = backoffDelays[pass - 1];
+      console.log(`[fallback] Pass ${pass} failed all models with recoverable errors. Waiting ${waitTime / 1000} seconds before Pass ${pass + 1}...`);
+      await new Promise((resolve) => setTimeout(resolve, waitTime));
     }
   }
 
+  console.log(`[fallback] All ${maxPasses} passes exhausted`);
   throw lastError || new Error('All models in fallback ladder exhausted');
 }
 
@@ -541,14 +554,21 @@ const summarizeSessionTool: FunctionDeclaration = {
   },
 };
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 // POST /api/chat: Gemini Audit Agent interaction with multi-round function calling loop
 app.post('/api/chat', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   const user = req.user!;
   const body = req.body && typeof req.body === 'object' ? req.body : {};
-  const { sessionId, message } = body;
+  const { sessionId, message, clientMessageId } = body;
 
   if (!sessionId || typeof sessionId !== 'string') {
     return res.status(400).json({ error: 'Missing or invalid sessionId' });
+  }
+
+  // Idempotent clientMessageId validation per Requirement 2
+  if (!clientMessageId || typeof clientMessageId !== 'string' || !UUID_REGEX.test(clientMessageId)) {
+    return res.status(400).json({ error: 'clientMessageId must be a valid UUID' });
   }
 
   // Validate message length (max 2,000 characters per Directive 8)
@@ -573,7 +593,33 @@ app.post('/api/chat', requireAuth, async (req: AuthenticatedRequest, res: Respon
     const selectedAreaIds: string[] = sessionDoc.selectedAuditAreaIds || [];
     const sessionAreas = activeAreas.filter((a: any) => selectedAreaIds.includes(a.id));
 
-    // 4. Load Conversation History from Firestore via firestoreRunQuery
+    // 4. Save incoming User message to Firestore (Directive 6 & Requirement 2: idempotent send)
+    const userInteractionId = `msg_${clientMessageId}_u`;
+    if (message && typeof message === 'string' && message.trim().length > 0) {
+      let docAlreadyExists = false;
+      try {
+        const existingDoc = await firestoreGet(`users/${user.uid}/interactions/${userInteractionId}`, user.token);
+        if (existingDoc && existingDoc.interactionId) {
+          docAlreadyExists = true;
+        }
+      } catch {
+        docAlreadyExists = false;
+      }
+
+      if (!docAlreadyExists) {
+        await firestoreSet(`users/${user.uid}/interactions/${userInteractionId}`, {
+          interactionId: userInteractionId,
+          sessionId,
+          userId: user.uid,
+          role: 'user',
+          content: message.trim(),
+          timestamp: new Date().toISOString(),
+        }, user.token);
+      }
+    }
+
+    // 5. Load Conversation History from Firestore via firestoreRunQuery
+    // (Build Gemini history from Firestore directly so the message appears once)
     const sessionInteractions = await firestoreRunQuery(
       {
         from: [{ collectionId: 'interactions' }],
@@ -593,21 +639,7 @@ app.post('/api/chat', requireAuth, async (req: AuthenticatedRequest, res: Respon
       (a: any, b: any) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime()
     );
 
-    // 5. Save incoming User message to Firestore (Directive 6: transaction completeness)
-    const nowIso = new Date().toISOString();
-    if (message && typeof message === 'string') {
-      const userInteractionId = `msg_${Date.now()}_u`;
-      await firestoreSet(`users/${user.uid}/interactions/${userInteractionId}`, {
-        interactionId: userInteractionId,
-        sessionId,
-        userId: user.uid,
-        role: 'user',
-        content: message,
-        timestamp: nowIso,
-      }, user.token);
-    }
-
-    // Format chat history for Gemini contents
+    // Format chat history for Gemini contents directly from Firestore interactions
     const contents: any[] = [];
     for (const msg of sessionInteractions) {
       if (msg.role === 'user') {
@@ -615,9 +647,6 @@ app.post('/api/chat', requireAuth, async (req: AuthenticatedRequest, res: Respon
       } else if (msg.role === 'agent') {
         contents.push({ role: 'model', parts: [{ text: msg.content }] });
       }
-    }
-    if (message && typeof message === 'string') {
-      contents.push({ role: 'user', parts: [{ text: message }] });
     }
 
     // If starting a fresh session without messages, provide a seed prompt
@@ -673,6 +702,7 @@ INTERVIEW RULES:
 
     // Multi-round function calling loop (max 4 rounds per turn per Directive 8)
     const recordedFindings: any[] = [];
+    let findingOrder = 0;
     let currentStage = sessionDoc.stage || 'ProcessWalkthrough';
     let isCompleted = sessionDoc.status === 'completed';
     let sessionSummary = sessionDoc.summary || '';
@@ -746,7 +776,9 @@ INTERVIEW RULES:
           }, user.token);
           result = { ok: true, currentStage: validStage };
         } else if (name === 'record_finding') {
-          const findingId = `fnd_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+          // Requirement 3: deterministic id fnd_<clientMessageId>_<n> (n = order of call in this turn)
+          findingOrder++;
+          const findingId = `fnd_${clientMessageId}_${findingOrder}`;
           const allowedCategories = ['Man', 'Machine', 'Method', 'Material', 'Measurement', 'Environment'];
           const allowedSeverities = ['Low', 'Medium', 'High', 'Critical'];
 
@@ -821,7 +853,7 @@ INTERVIEW RULES:
 
     // Save final Agent response interaction to Firestore (Directive 6: transaction completeness)
     if (finalAgentReply) {
-      const agentInteractionId = `msg_${Date.now()}_a`;
+      const agentInteractionId = `msg_${clientMessageId}_a`;
       await firestoreSet(`users/${user.uid}/interactions/${agentInteractionId}`, {
         interactionId: agentInteractionId,
         sessionId,
@@ -843,6 +875,24 @@ INTERVIEW RULES:
     });
   } catch (err: any) {
     console.error('Chat endpoint error:', err);
+    const rawStatus = err?.status ?? err?.code ?? err?.statusCode;
+    const numStatus = Number(rawStatus);
+    const msg = String(err?.message || '');
+    const isBusy =
+      numStatus === 503 ||
+      numStatus === 429 ||
+      msg.includes('503') ||
+      msg.includes('429') ||
+      msg.includes('UNAVAILABLE') ||
+      msg.includes('RESOURCE_EXHAUSTED');
+
+    if (isBusy) {
+      return res.status(503).json({
+        error: 'The AI service is busy right now. Your message is saved. Click Retry in a few seconds.',
+        isBusy: true,
+      });
+    }
+
     res.status(500).json({ error: err?.message || 'Chat generation failed' });
   }
 });

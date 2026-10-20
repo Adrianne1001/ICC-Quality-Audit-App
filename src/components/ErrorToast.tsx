@@ -5,9 +5,10 @@ interface ErrorToastProps {
   message: string | null;
   onRetry?: () => void;
   onDismiss: () => void;
+  inputIntact?: boolean;
 }
 
-export const ErrorToast: React.FC<ErrorToastProps> = ({ message, onRetry, onDismiss }) => {
+export const ErrorToast: React.FC<ErrorToastProps> = ({ message, onRetry, onDismiss, inputIntact }) => {
   if (!message) return null;
 
   return (
@@ -17,7 +18,9 @@ export const ErrorToast: React.FC<ErrorToastProps> = ({ message, onRetry, onDism
         <div className="flex-1 text-sm leading-relaxed">
           <p className="font-semibold text-red-100">Operation / Save Failed</p>
           <p className="text-red-200 mt-1">{message}</p>
-          <p className="text-xs text-red-300 mt-1">Your unsaved input remains intact.</p>
+          {inputIntact && (
+            <p className="text-xs text-red-300 mt-1">Your unsaved input remains intact.</p>
+          )}
         </div>
         <button
           onClick={onDismiss}

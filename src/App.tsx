@@ -52,10 +52,12 @@ function MainApp() {
   // Global Error Toast State (Directive 6: Never fail silently, provide Retry Save)
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [retryCallback, setRetryCallback] = useState<(() => void) | undefined>(undefined);
+  const [inputIntact, setInputIntact] = useState<boolean>(false);
 
-  const showError = (msg: string, retryFn?: () => void) => {
+  const showError = (msg: string, retryFn?: () => void, hasInputIntact = false) => {
     setErrorMessage(msg);
     setRetryCallback(() => retryFn);
+    setInputIntact(hasInputIntact);
   };
 
   // Profile completeness check (must have valid Infosoft department)
@@ -380,9 +382,11 @@ function MainApp() {
       <ErrorToast
         message={errorMessage}
         onRetry={retryCallback}
+        inputIntact={inputIntact}
         onDismiss={() => {
           setErrorMessage(null);
           setRetryCallback(undefined);
+          setInputIntact(false);
         }}
       />
     </div>
