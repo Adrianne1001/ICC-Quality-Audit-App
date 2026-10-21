@@ -222,6 +222,41 @@ async function firestoreSet(docPath: string, dataObj: any, token: string) {
   return await res.json();
 }
 
+async function firestoreCreate(docPath: string, dataObj: any, token: string) {
+  // Defensive: strip undefined values
+  const sanitized: Record<string, any> = {};
+  for (const [k, v] of Object.entries(dataObj)) {
+    if (v !== undefined) sanitized[k] = v;
+  }
+
+  const fields: Record<string, any> = {};
+  for (const [k, v] of Object.entries(sanitized)) {
+    fields[k] = toFirestoreValue(v);
+  }
+
+  const url = `${firestoreBaseUrl()}/${docPath}?currentDocument.exists=false`;
+  const res = await fetch(url, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ fields }),
+  });
+  if (res.status === 409) {
+    return { alreadyExists: true };
+  }
+  if (!res.ok) {
+    const errText = await res.text();
+    if (errText.includes('ALREADY_EXISTS') || errText.includes('already exists')) {
+      return { alreadyExists: true };
+    }
+    const cleanError = errText.slice(0, 300).replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi, 'Bearer [REDACTED]');
+    throw new Error(`${docPath} CREATE failed [${res.status}]: ${cleanError}`);
+  }
+  return await res.json();
+}
+
 async function firestoreUpdate(docPath: string, dataObj: any, token: string) {
   // Defensive: strip undefined values
   const sanitized: Record<string, any> = {};
@@ -1174,7 +1209,10 @@ RULES
               updatedAt: new Date().toISOString(),
             };
 
-            await firestoreSet(`users/${user.uid}/findings/${findingId}`, findingData, user.token);
+            const createRes = await firestoreCreate(`users/${user.uid}/findings/${findingId}`, findingData, user.token);
+            if (createRes?.alreadyExists) {
+              console.log(`[record_finding] Finding ${findingId} already exists in Firestore (409 / ALREADY_EXISTS). Treating as already saved.`);
+            }
             recordedFindings.push(findingData);
             result = { saved: true, findingId };
           }

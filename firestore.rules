@@ -57,7 +57,21 @@ service cloud.firestore {
       match /findings/{findingId} {
         allow get: if isValidId(userId) && isValidId(findingId) && (isOwner(userId) || isAdmin());
         allow list: if isValidId(userId) && (isOwner(userId) || isAdmin());
-        allow create, update: if isValidId(userId) && isValidId(findingId) && isOwner(userId) && request.resource.data.userId == request.auth.uid;
+        allow create: if isValidId(userId) && isValidId(findingId) && isOwner(userId)
+          && request.resource.data.userId == request.auth.uid
+          && request.resource.data.status == 'Pending'
+          && request.resource.data.ishikawaCategory in ['Man', 'Machine', 'Method', 'Material', 'Measurement', 'Environment']
+          && request.resource.data.severity in ['Low', 'Medium', 'High', 'Critical']
+          && isValidId(request.resource.data.sessionId)
+          && exists(/databases/$(database)/documents/users/$(userId)/sessions/$(request.resource.data.sessionId))
+          && request.resource.data.description is string && request.resource.data.description.size() <= 2000
+          && request.resource.data.userQuote is string && request.resource.data.userQuote.size() <= 2000
+          && request.resource.data.suggestedImprovement is string && request.resource.data.suggestedImprovement.size() <= 2000;
+        allow update: if isValidId(userId) && isValidId(findingId) && isOwner(userId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(
+            ['status', 'description', 'suggestedImprovement', 'userEditNote', 'userDisputeReason', 'updatedAt']
+          )
+          && request.resource.data.status in ['Confirmed', 'Edited', 'Disputed'];
         allow delete: if isValidId(userId) && isValidId(findingId) && isOwner(userId);
       }
     }
