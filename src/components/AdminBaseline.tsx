@@ -182,7 +182,11 @@ export const AdminBaseline: React.FC<AdminBaselineProps> = ({ onError }) => {
 
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || 'Server failed to extract audit areas');
+      if (res.status === 429) {
+        throw new Error(data?.error || 'Too many requests. Please wait a few minutes and try again.');
+      }
+      const rawMsg = data?.error || 'Server failed to extract audit areas';
+      throw new Error(data?.code ? `${rawMsg} (${data.code})` : rawMsg);
     }
 
     const result = await res.json();
@@ -239,7 +243,8 @@ export const AdminBaseline: React.FC<AdminBaselineProps> = ({ onError }) => {
         });
         if (!res.ok) {
           const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.error || 'Failed to delete drafts on server');
+          const rawMsg = errData?.error || 'Failed to delete drafts on server';
+          throw new Error(errData?.code ? `${rawMsg} (${errData.code})` : rawMsg);
         }
         const data = await res.json();
         setExtractSuccess(`Deleted ${data.deletedCount ?? 0} draft audit areas successfully.`);

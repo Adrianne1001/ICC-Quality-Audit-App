@@ -411,6 +411,115 @@ async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextF
 }
 
 /**
+ * Security Helpers & Rate Limiters (SEC-01, SEC-03, SEC-04)
+ */
+
+// SEC-01: Session ID validator (max 64 chars, only letters, digits, _, -)
+const SESSION_ID_REGEX = /^[a-zA-Z0-9_\-]+$/;
+function isValidSessionId(id: any): boolean {
+  return typeof id === 'string' && id.length > 0 && id.length <= 64 && SESSION_ID_REGEX.test(id);
+}
+
+// SEC-04: Error code mapper and 500 responder
+function determineErrorCode(err: any): string {
+  const msg = String(err?.message || '').toUpperCase();
+  const rawStatus = String(err?.status ?? err?.code ?? err?.statusCode ?? '').toUpperCase();
+
+  if (
+    rawStatus === '403' ||
+    rawStatus.includes('PERMISSION_DENIED') ||
+    msg.includes('403') ||
+    msg.includes('PERMISSION_DENIED') ||
+    msg.includes('PERMISSION DENIED') ||
+    msg.includes('INSUFFICIENT PERMISSIONS')
+  ) {
+    return 'FIRESTORE_403';
+  }
+  if (
+    rawStatus === '503' ||
+    rawStatus.includes('UNAVAILABLE') ||
+    msg.includes('503') ||
+    msg.includes('UNAVAILABLE')
+  ) {
+    return 'GEMINI_503';
+  }
+  if (
+    msg.includes('GEMINI') ||
+    msg.includes('GENAI') ||
+    msg.includes('RESOURCE_EXHAUSTED') ||
+    msg.includes('MODEL') ||
+    msg.includes('FALLBACK')
+  ) {
+    return 'GEMINI_ERROR';
+  }
+  if (
+    msg.includes('FIRESTORE') ||
+    msg.includes('DATABASE') ||
+    msg.includes('DOCUMENT') ||
+    msg.includes('QUERY')
+  ) {
+    return 'FIRESTORE_ERROR';
+  }
+  return 'INTERNAL';
+}
+
+function sendError500(res: Response, userFriendlyMessage: string, err: any) {
+  const requestId = `req_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  const code = determineErrorCode(err);
+  console.error(`[500 Internal Error] [${requestId}] [${code}]:`, err);
+  return res.status(500).json({
+    error: userFriendlyMessage,
+    code,
+    requestId,
+  });
+}
+
+// SEC-03: Per-user in-memory sliding-window rate limiters keyed by verified UID
+function createUidRateLimiter(maxRequests: number, windowMs: number) {
+  const requestTimestamps = new Map<string, number[]>();
+
+  const interval = setInterval(() => {
+    const now = Date.now();
+    const threshold = now - windowMs;
+    for (const [uid, timestamps] of requestTimestamps.entries()) {
+      const valid = timestamps.filter((t) => t > threshold);
+      if (valid.length === 0) {
+        requestTimestamps.delete(uid);
+      } else {
+        requestTimestamps.set(uid, valid);
+      }
+    }
+  }, 120000);
+  if (interval.unref) interval.unref();
+
+  return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    const uid = req.user?.uid;
+    if (!uid) {
+      return res.status(401).json({ error: 'Unauthorized: missing user identity' });
+    }
+
+    const now = Date.now();
+    const threshold = now - windowMs;
+    const timestamps = (requestTimestamps.get(uid) || []).filter((t) => t > threshold);
+
+    if (timestamps.length >= maxRequests) {
+      return res.status(429).json({
+        error: 'Too many requests. Please wait a few minutes and try again.',
+      });
+    }
+
+    timestamps.push(now);
+    requestTimestamps.set(uid, timestamps);
+    next();
+  };
+}
+
+const TEN_MINUTES_MS = 10 * 60 * 1000;
+const chatRateLimiter = createUidRateLimiter(40, TEN_MINUTES_MS); // 40 requests per 10 min
+const sessionRateLimiter = createUidRateLimiter(20, TEN_MINUTES_MS); // 20 per 10 min
+const adminGeminiRateLimiter = createUidRateLimiter(10, TEN_MINUTES_MS); // 10 per 10 min
+
+/**
  * Endpoints
  */
 
@@ -478,8 +587,7 @@ app.post('/api/profile', requireAuth, async (req: AuthenticatedRequest, res: Res
     await firestoreSet(`users/${user.uid}`, updatedProfile, user.token);
     res.json({ ok: true, profile: updatedProfile });
   } catch (err: any) {
-    console.error('Failed to save profile on server:', err);
-    res.status(500).json({ error: err?.message || 'Failed to save profile.' });
+    return sendError500(res, 'Failed to save employee profile.', err);
   }
 });
 
@@ -687,12 +795,13 @@ Format the summary clearly in Markdown with:
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 // POST /api/chat: Gemini Audit Agent interaction with multi-round function calling loop
-app.post('/api/chat', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/chat', requireAuth, chatRateLimiter, async (req: AuthenticatedRequest, res: Response) => {
   const user = req.user!;
   const body = req.body && typeof req.body === 'object' ? req.body : {};
   const { sessionId, message, clientMessageId } = body;
 
-  if (!sessionId || typeof sessionId !== 'string') {
+  // SEC-01: Session ID validation (string, max 64 chars, only letters, digits, _, -)
+  if (!isValidSessionId(sessionId)) {
     return res.status(400).json({ error: 'Missing or invalid sessionId' });
   }
 
@@ -1169,12 +1278,12 @@ RULES
       });
     }
 
-    res.status(500).json({ error: err?.message || 'Chat generation failed' });
+    return sendError500(res, 'Audit Agent chat processing failed.', err);
   }
 });
 
 // POST /api/sessions/start: Creates new session and matches 1-3 active audit areas
-app.post('/api/sessions/start', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/sessions/start', requireAuth, sessionRateLimiter, async (req: AuthenticatedRequest, res: Response) => {
   const user = req.user!;
   try {
     const profile = await firestoreGet(`users/${user.uid}`, user.token);
@@ -1251,17 +1360,19 @@ Respond strictly in JSON format with an array of string IDs: ["id1", "id2"].
     await firestoreSet(`users/${user.uid}/sessions/${sessionId}`, sessionData, user.token);
     res.json(sessionData);
   } catch (err: any) {
-    const errMsg = err?.message || 'Failed to start session';
-    console.error(`[API /sessions/start Error] ${errMsg}`);
-    res.status(500).json({ error: errMsg });
+    return sendError500(res, 'Failed to start audit session.', err);
   }
 });
 
 // POST /api/sessions/end: Gracefully ends session and generates summary
-app.post('/api/sessions/end', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/sessions/end', requireAuth, sessionRateLimiter, async (req: AuthenticatedRequest, res: Response) => {
   const user = req.user!;
   const { sessionId } = req.body || {};
-  if (!sessionId) return res.status(400).json({ error: 'Missing sessionId' });
+
+  // SEC-01: Session ID validation (string, max 64 chars, only letters, digits, _, -)
+  if (!isValidSessionId(sessionId)) {
+    return res.status(400).json({ error: 'Missing or invalid sessionId' });
+  }
 
   try {
     const session = await firestoreGet(`users/${user.uid}/sessions/${sessionId}`, user.token);
@@ -1322,13 +1433,12 @@ app.post('/api/sessions/end', requireAuth, async (req: AuthenticatedRequest, res
 
     res.json({ ok: true, summary: summaryText, modelUsed });
   } catch (err: any) {
-    console.error('Session end error:', err);
-    res.status(500).json({ error: err?.message || 'Failed to end session' });
+    return sendError500(res, 'Failed to end audit session.', err);
   }
 });
 
 // POST /api/baseline/extract: Admin baseline upload & structured Audit Area extraction
-app.post('/api/baseline/extract', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/baseline/extract', requireAuth, adminGeminiRateLimiter, async (req: AuthenticatedRequest, res: Response) => {
   if (!req.isAdmin) {
     return res.status(403).json({ error: 'Forbidden: Super Admin access required' });
   }
@@ -1469,8 +1579,7 @@ ${textContent.slice(0, 60000)}
       areas: savedAreas,
     });
   } catch (err: any) {
-    console.error('Baseline extraction error:', err);
-    res.status(500).json({ error: err?.message || 'Failed to extract baseline' });
+    return sendError500(res, 'Failed to extract audit baseline.', err);
   }
 });
 
@@ -1498,14 +1607,13 @@ app.delete('/api/baseline/drafts', requireAuth, async (req: AuthenticatedRequest
     }
     res.json({ ok: true, deletedCount });
   } catch (err: any) {
-    console.error('Failed to delete drafts on server:', err);
-    res.status(500).json({ error: err?.message || 'Failed to delete drafts' });
+    return sendError500(res, 'Failed to delete draft audit areas.', err);
   }
 });
 
 // POST /api/reports/generate: Synthesizes all findings into consolidated TQM report
 // Directive 8 & Security Directive: ignores client-sent body data, queries collection-group findings on server
-app.post('/api/reports/generate', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/reports/generate', requireAuth, adminGeminiRateLimiter, async (req: AuthenticatedRequest, res: Response) => {
   if (!req.isAdmin) {
     return res.status(403).json({ error: 'Forbidden: Super Admin access required' });
   }
@@ -1695,8 +1803,9 @@ app.post('/api/reports/generate', requireAuth, async (req: AuthenticatedRequest,
       distinctEmployeesCount,
     };
 
-    // Extract sanitized findings for the prompt
-    const sanitizedFindings = findingsFromDb.map((f: any) => ({
+    // SEC-02: Extract at most the 300 most recent sanitized findings for the prompt
+    // computedStats continues to be computed from all loaded findings in findingsFromDb
+    const sanitizedFindings = findingsFromDb.slice(0, 300).map((f: any) => ({
       findingId: f.findingId,
       category: f.ishikawaCategory || 'Method',
       severity: f.severity || 'Medium',
@@ -1806,8 +1915,7 @@ ${departmentsList.map((dept) => {
     await firestoreSet(`auditReports/${reportId}`, reportData, user.token);
     res.json({ ok: true, report: reportData, modelUsed });
   } catch (err: any) {
-    console.error('Report generation error:', err);
-    res.status(500).json({ error: err?.message || 'Failed to generate report' });
+    return sendError500(res, 'Failed to generate consolidated audit report.', err);
   }
 });
 

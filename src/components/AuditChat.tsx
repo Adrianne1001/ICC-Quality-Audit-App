@@ -26,7 +26,7 @@ import { db, stripUndefined } from '../firebase';
 interface AuditChatProps {
   session: AuditSession;
   onSessionUpdated: (session: AuditSession) => void;
-  onError: (errorMsg: string, retryFn?: () => void, hasInputIntact?: boolean) => void;
+  onError: (errorMsg: string, retryFn?: () => void, hasInputIntact?: boolean, code?: string) => void;
 }
 
 const STAGES: { key: InterviewStage; label: string; desc: string }[] = [
@@ -158,13 +158,17 @@ export const AuditChat: React.FC<AuditChatProps> = ({ session, onSessionUpdated,
           const errData = await res.json().catch(() => ({}));
           console.error('Chat endpoint error response details:', res.status, errData);
 
+          // SEC-03: Rate limit handling (429)
+          if (res.status === 429) {
+            const rateLimitMsg = errData?.error || 'Too many requests. Please wait a few minutes and try again.';
+            throw new Error(rateLimitMsg);
+          }
+
           const isBusy =
             res.status === 503 ||
-            res.status === 429 ||
             errData?.isBusy ||
             String(errData?.error || '').includes('busy') ||
-            String(errData?.error || '').includes('503') ||
-            String(errData?.error || '').includes('429');
+            String(errData?.error || '').includes('503');
 
           if (isBusy) {
             const busyErr = new Error('The AI service is busy right now. Your message is saved. Click Retry in a few seconds.');
@@ -173,11 +177,11 @@ export const AuditChat: React.FC<AuditChatProps> = ({ session, onSessionUpdated,
             throw busyErr;
           }
 
-          const rawError = errData?.error;
-          const cleanMsg = typeof rawError === 'string' && !rawError.trim().startsWith('{')
-            ? rawError
-            : `Server responded with ${res.status}`;
-          throw new Error(cleanMsg);
+          // SEC-04: Show short message and error code in toast
+          const rawError = errData?.error || `Server responded with ${res.status}`;
+          const errObj = new Error(errData?.code ? `${rawError} (${errData.code})` : rawError);
+          (errObj as any).code = errData?.code;
+          throw errObj;
         }
 
         const data = await res.json();
@@ -190,8 +194,7 @@ export const AuditChat: React.FC<AuditChatProps> = ({ session, onSessionUpdated,
         const isBusy =
           err?.isBusy ||
           err?.message?.includes('busy right now') ||
-          err?.message?.includes('503') ||
-          err?.message?.includes('429');
+          err?.message?.includes('503');
 
         const toastMsg = isBusy
           ? 'The AI service is busy right now. Your message is saved. Click Retry in a few seconds.'
@@ -204,7 +207,8 @@ export const AuditChat: React.FC<AuditChatProps> = ({ session, onSessionUpdated,
         onError(
           toastMsg,
           () => sendMessage(textToSend, clientMessageId),
-          inputActuallyHasText
+          inputActuallyHasText,
+          err?.code
         );
       } finally {
         setIsSending(false);
@@ -227,13 +231,20 @@ export const AuditChat: React.FC<AuditChatProps> = ({ session, onSessionUpdated,
       });
 
       if (!res.ok) {
-        throw new Error('Failed to end session');
+        const errData = await res.json().catch(() => ({}));
+        if (res.status === 429) {
+          throw new Error(errData?.error || 'Too many requests. Please wait a few minutes and try again.');
+        }
+        const rawMsg = errData?.error || 'Failed to end session';
+        const errObj = new Error(errData?.code ? `${rawMsg} (${errData.code})` : rawMsg);
+        (errObj as any).code = errData?.code;
+        throw errObj;
       }
 
       setConfirmEndModal(false);
     } catch (err: any) {
       console.error('Failed to conclude session:', err);
-      onError(err?.message || 'Failed to conclude session', handleEndSession);
+      onError(err?.message || 'Failed to conclude session', handleEndSession, false, err?.code);
     } finally {
       setEndingSession(false);
     }

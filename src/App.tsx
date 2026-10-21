@@ -51,11 +51,20 @@ function MainApp() {
 
   // Global Error Toast State (Directive 6: Never fail silently, provide Retry Save)
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
   const [retryCallback, setRetryCallback] = useState<(() => void) | undefined>(undefined);
   const [inputIntact, setInputIntact] = useState<boolean>(false);
 
-  const showError = (msg: string, retryFn?: () => void, hasInputIntact = false) => {
-    setErrorMessage(msg);
+  const showError = (msg: string, retryFn?: () => void, hasInputIntact = false, code?: string) => {
+    let finalMsg = msg;
+    let finalCode = code || null;
+    const codeMatch = msg.match(/^(.+?)\s*\(([A-Z0-9_]+)\)$/);
+    if (!finalCode && codeMatch) {
+      finalMsg = codeMatch[1].trim();
+      finalCode = codeMatch[2];
+    }
+    setErrorMessage(finalMsg);
+    setErrorCode(finalCode);
     setRetryCallback(() => retryFn);
     setInputIntact(hasInputIntact);
   };
@@ -84,7 +93,13 @@ function MainApp() {
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => null);
-        throw new Error(errorData?.error || 'Failed to start new audit session');
+        if (res.status === 429) {
+          throw new Error(errorData?.error || 'Too many requests. Please wait a few minutes and try again.');
+        }
+        const rawMsg = errorData?.error || 'Failed to start new audit session';
+        const errObj = new Error(errorData?.code ? `${rawMsg} (${errorData.code})` : rawMsg);
+        (errObj as any).code = errorData?.code;
+        throw errObj;
       }
 
       const sessionData: AuditSession = await res.json();
@@ -92,7 +107,7 @@ function MainApp() {
       setHubSubTab('chat');
     } catch (err: any) {
       console.error('Start session error:', err);
-      showError(err?.message || 'Failed to start session', handleStartSession);
+      showError(err?.message || 'Failed to start session', handleStartSession, false, err?.code);
     } finally {
       setIsStartingSession(false);
     }
@@ -381,10 +396,12 @@ function MainApp() {
       {/* Global Error Banner / Toast (Directive 6: Never fail silently, provide Retry Save) */}
       <ErrorToast
         message={errorMessage}
+        code={errorCode}
         onRetry={retryCallback}
         inputIntact={inputIntact}
         onDismiss={() => {
           setErrorMessage(null);
+          setErrorCode(null);
           setRetryCallback(undefined);
           setInputIntact(false);
         }}

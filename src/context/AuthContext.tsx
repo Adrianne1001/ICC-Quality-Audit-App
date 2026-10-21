@@ -150,7 +150,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.error || 'Failed to update profile');
+      const rawMsg = errData?.error || 'Failed to update profile';
+      throw new Error(errData?.code ? `${rawMsg} (${errData.code})` : rawMsg);
     }
   };
 

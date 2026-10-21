@@ -3,12 +3,13 @@ import { AlertCircle, RefreshCw, X } from 'lucide-react';
 
 interface ErrorToastProps {
   message: string | null;
+  code?: string | null;
   onRetry?: () => void;
   onDismiss: () => void;
   inputIntact?: boolean;
 }
 
-export const ErrorToast: React.FC<ErrorToastProps> = ({ message, onRetry, onDismiss, inputIntact }) => {
+export const ErrorToast: React.FC<ErrorToastProps> = ({ message, code, onRetry, onDismiss, inputIntact }) => {
   if (!message) return null;
 
   return (
@@ -16,7 +17,14 @@ export const ErrorToast: React.FC<ErrorToastProps> = ({ message, onRetry, onDism
       <div className="flex items-start gap-3">
         <AlertCircle className="w-5 h-5 text-red-300 shrink-0 mt-0.5" />
         <div className="flex-1 text-sm leading-relaxed">
-          <p className="font-semibold text-red-100">Operation / Save Failed</p>
+          <div className="flex items-center gap-2">
+            <p className="font-semibold text-red-100">Operation / Save Failed</p>
+            {code && (
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-red-800/90 text-red-200 border border-red-600/60">
+                {code}
+              </span>
+            )}
+          </div>
           <p className="text-red-200 mt-1">{message}</p>
           {inputIntact && (
             <p className="text-xs text-red-300 mt-1">Your unsaved input remains intact.</p>

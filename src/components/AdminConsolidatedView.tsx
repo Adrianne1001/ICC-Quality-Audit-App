@@ -250,7 +250,11 @@ export const AdminConsolidatedView: React.FC<AdminConsolidatedViewProps> = ({ on
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || 'Report synthesis failed');
+        if (res.status === 429) {
+          throw new Error(errData?.error || 'Too many requests. Please wait a few minutes and try again.');
+        }
+        const rawMsg = errData?.error || 'Report synthesis failed';
+        throw new Error(errData?.code ? `${rawMsg} (${errData.code})` : rawMsg);
       }
 
       const data = await res.json();
