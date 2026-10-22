@@ -994,9 +994,13 @@ HOW TO RUN THE INTERVIEW
    Call get_audit_standards for each.
 3. Ask ONE question at a time in plain, friendly language. Reply in the language the employee
    uses (English, Filipino, or Taglish). If an answer is vague, ask for a concrete recent example.
-4. Move through stages and call update_interview_stage each time you enter a new one:
-   ProcessWalkthrough -> Difficulties -> Complaints -> RootCauses (up to 5 "why" follow-ups)
-   -> Suggestions -> Recap.
+4. Move through stages in this order: ProcessWalkthrough -> Difficulties -> Complaints ->
+   RootCauses (up to 5 "why" follow-ups) -> Suggestions -> Recap. session_state shows the
+   current stage. Whenever your next question belongs to a later stage, you MUST call
+   update_interview_stage with that stage in the same turn, before you write your reply.
+   Never tell the employee you are moving to a stage without calling it. Do not skip a
+   stage: ask at least one question in each stage, including Complaints (complaints or
+   rework requests from clients, users or other teams), before moving on.
 5. After each substantive answer, reflect in 1-3 sentences: what you heard, and whether it
    matches or departs from the company standard.
 6. When the employee describes a concrete problem, call record_finding once per distinct issue
@@ -1033,6 +1037,7 @@ RULES
     let sessionSummary = sessionDoc.summary || '';
     let finalAgentReply = '';
     let lastModelUsed = 'gemini-3.6-flash';
+    let stageOrSummaryToolCalled = false;
 
     const tools = [{
       functionDeclarations: [
@@ -1092,6 +1097,7 @@ RULES
             result = { error: 'Area not found or not active' };
           }
         } else if (name === 'update_interview_stage') {
+          stageOrSummaryToolCalled = true;
           const allowedStages = ['ProcessWalkthrough', 'Difficulties', 'Complaints', 'RootCauses', 'Suggestions', 'Recap'];
           const validStage = allowedStages.includes(args?.stage) ? args.stage : currentStage;
           currentStage = validStage;
@@ -1217,6 +1223,7 @@ RULES
             result = { saved: true, findingId };
           }
         } else if (name === 'summarize_session') {
+          stageOrSummaryToolCalled = true;
           // Point 3: Grounded summary using only transcript and this session's saved findings
           const allCurrentFindings = [...sessionFindings, ...recordedFindings];
           const { summary: groundedSummary } = await generateGroundedSessionSummary(
@@ -1274,6 +1281,54 @@ RULES
     finalAgentReply = stripToolCallsFromText(finalAgentReply);
     if (!finalAgentReply) {
       finalAgentReply = 'I have noted your inputs and updated the audit records. Please continue with the next details of your process.';
+    }
+
+    // Server safety net: automatically progress stage if model indicated stage transition without calling tool
+    if (!stageOrSummaryToolCalled && !isCompleted) {
+      const paragraphs = finalAgentReply.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+      const lastParagraph = paragraphs.length > 0 ? paragraphs[paragraphs.length - 1] : finalAgentReply.trim();
+      const cleanedParagraph = lastParagraph.replace(/\*\*/g, '').replace(/[*_]/g, '');
+
+      const STAGE_ORDER = ['ProcessWalkthrough', 'Difficulties', 'Complaints', 'RootCauses', 'Suggestions', 'Recap'];
+      const STAGE_PATTERNS: { stage: string; pattern: RegExp }[] = [
+        { stage: 'ProcessWalkthrough', pattern: /\bprocess\s+walkthrough\b/i },
+        { stage: 'Difficulties', pattern: /\b(?:difficulty|difficulties)\b/i },
+        { stage: 'Complaints', pattern: /\b(?:complaint|complaints)\b/i },
+        { stage: 'RootCauses', pattern: /\b(?:root\s+cause|root\s+causes)\b/i },
+        { stage: 'Suggestions', pattern: /\b(?:suggestion|suggestions)\b/i },
+        { stage: 'Recap', pattern: /\brecap\b/i },
+      ];
+
+      const foundStages: string[] = [];
+      for (const { stage: sName, pattern } of STAGE_PATTERNS) {
+        if (pattern.test(cleanedParagraph)) {
+          foundStages.push(sName);
+        }
+      }
+
+      if (foundStages.length > 0) {
+        let furthestStage: string | null = null;
+        let furthestIndex = -1;
+
+        for (const s of foundStages) {
+          const idx = STAGE_ORDER.indexOf(s);
+          if (idx > furthestIndex) {
+            furthestIndex = idx;
+            furthestStage = s;
+          }
+        }
+
+        const currentStageIndex = STAGE_ORDER.indexOf(currentStage);
+        if (furthestStage && furthestIndex > currentStageIndex) {
+          const oldStage = currentStage;
+          currentStage = furthestStage;
+          await firestoreUpdate(`users/${user.uid}/sessions/${sessionId}`, {
+            stage: currentStage,
+            updatedAt: new Date().toISOString(),
+          }, user.token);
+          console.log(`[stage-fallback] ${oldStage} -> ${currentStage} (session ${sessionId})`);
+        }
+      }
     }
 
     // Save final Agent response interaction to Firestore (Directive 6: transaction completeness)
