@@ -178,17 +178,24 @@ async function generateContentWithFallback(params: any): Promise<{ response: any
         const msg = String(err?.message || '');
         const msgLower = msg.toLowerCase();
 
-        // 3. Billing and permission errors are not "busy" (Requirement 3)
-        // If a model call fails with HTTP 402 or 403, or the error message mentions
-        // billing, credits or prepayment, stop the ladder and don't retry.
-        // Check this before the recoverable check, because these errors can also contain RESOURCE_EXHAUSTED.
+        // Billing and permission errors: treat as billing/permission ONLY if its status
+        // is 402 or 403, or its code is PERMISSION_DENIED, or its message contains "prepayment"
+        // or "credits are depleted". Never when the status is 429 or the message contains
+        // "exceeded your current quota". Remove "billing" and "credit" keyword checks.
+        const isQuota429 =
+          numStatus === 429 ||
+          codeStr === '429' ||
+          msgLower.includes('exceeded your current quota');
+
         const isBillingOrPermission =
-          numStatus === 402 ||
-          numStatus === 403 ||
-          msgLower.includes('billing') ||
-          msgLower.includes('credit') ||
-          msgLower.includes('prepayment') ||
-          msgLower.includes('pre-payment');
+          !isQuota429 &&
+          (
+            numStatus === 402 ||
+            numStatus === 403 ||
+            codeStr === 'PERMISSION_DENIED' ||
+            msgLower.includes('prepayment') ||
+            msgLower.includes('credits are depleted')
+          );
 
         if (isBillingOrPermission) {
           (err as any).isBillingOrPermission = true;
@@ -1554,19 +1561,8 @@ RULES
     const rawStatus = err?.status ?? err?.code ?? err?.statusCode;
     const numStatus = Number(rawStatus);
     const msg = String(err?.message || '');
-    const msgLower = msg.toLowerCase();
-
-    // Reliability Fix 3: Billing and permission errors are not "busy"
-    const isBillingOrPermission =
-      err?.isBillingOrPermission ||
-      numStatus === 402 ||
-      numStatus === 403 ||
-      msgLower.includes('billing') ||
-      msgLower.includes('credit') ||
-      msgLower.includes('prepayment') ||
-      msgLower.includes('pre-payment');
-
-    if (isBillingOrPermission) {
+    // Decide the billing/permission reply only from err.isBillingOrPermission (set by generateContentWithFallback)
+    if (err?.isBillingOrPermission) {
       return res.status(500).json({
         error: 'The AI service is unavailable because of an account or billing problem. Please tell the administrator.',
         code: 'AI_UNAVAILABLE',
