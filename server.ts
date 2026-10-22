@@ -50,6 +50,52 @@ const ai = new GoogleGenAI({
   },
 });
 
+// Model cooldown in-memory map: model -> cooldownUntil timestamp (ms) (Reliability Fix 1)
+const modelCooldownMap = new Map<string, number>();
+
+function formatTimeHHMMSS(date: Date): string {
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function extractRetryDelayMs(err: any): number | null {
+  if (typeof err?.retryDelay === 'number') {
+    return err.retryDelay > 1000 ? err.retryDelay : Math.round(err.retryDelay * 1000);
+  }
+  if (typeof err?.error?.retryDelay === 'number') {
+    return err.error.retryDelay > 1000 ? err.error.retryDelay : Math.round(err.error.retryDelay * 1000);
+  }
+
+  const details = err?.details || err?.error?.details;
+  if (Array.isArray(details)) {
+    for (const item of details) {
+      if (item?.retryDelay) {
+        if (typeof item.retryDelay === 'string') {
+          const match = item.retryDelay.match(/([0-9]+(?:\.[0-9]+)?)/);
+          if (match) return Math.round(parseFloat(match[1]) * 1000);
+        } else if (typeof item.retryDelay === 'number') {
+          return item.retryDelay > 1000 ? item.retryDelay : Math.round(item.retryDelay * 1000);
+        } else if (item.retryDelay?.seconds) {
+          const sec = Number(item.retryDelay.seconds) || 0;
+          const nanos = Number(item.retryDelay.nanos) || 0;
+          return Math.round(sec * 1000 + nanos / 1000000);
+        }
+      }
+    }
+  }
+
+  const msg = String(err?.message || '');
+  const match = msg.match(/retry\s+(?:after|in|delay)?\s*[:\s]?\s*([0-9]+(?:\.[0-9]+)?)\s*s/i);
+  if (match && match[1]) {
+    const sec = parseFloat(match[1]);
+    if (!isNaN(sec) && sec > 0) {
+      return Math.round(sec * 1000);
+    }
+  }
+
+  return null;
+}
+
 /**
  * Resilient generateContent wrapper using fallback ladder.
  * Supports FORCE_MODEL_FAILURE test harness.
@@ -62,32 +108,128 @@ async function generateContentWithFallback(params: any): Promise<{ response: any
   for (let pass = 1; pass <= maxPasses; pass++) {
     console.log(`[fallback] Pass ${pass}/${maxPasses} starting ladder execution...`);
 
+    const now = Date.now();
+    // If every model is in cooldown, ignore the cooldowns for that pass and try them all
+    const allInCooldown = MODEL_LADDER.every((m) => (modelCooldownMap.get(m) || 0) > now);
+
     for (let i = 0; i < MODEL_LADDER.length; i++) {
       const model = MODEL_LADDER[i];
-      const isPrimary = i === 0;
+      const cooldownUntil = modelCooldownMap.get(model) || 0;
 
+      // Skip models that are in cooldown unless every model is in cooldown
+      if (!allInCooldown && cooldownUntil > Date.now()) {
+        console.log(`[fallback] skip ${model} (cooldown until ${formatTimeHHMMSS(new Date(cooldownUntil))})`);
+        continue;
+      }
+
+      const isPrimary = i === 0;
       if (isPrimary && forceModelFailure) {
-        console.log(`[fallback] Pass ${pass}: ${model} failed (503 UNAVAILABLE [FORCE_MODEL_FAILURE]) -> trying ${MODEL_LADDER[i + 1] || 'none'}`);
+        console.log(`[fallback] Pass ${pass}: ${model} failed after 0.0 s (503 UNAVAILABLE [FORCE_MODEL_FAILURE]) -> trying ${MODEL_LADDER[i + 1] || 'none'}`);
         lastError = new Error('503 UNAVAILABLE (Simulated via FORCE_MODEL_FAILURE)');
         continue;
       }
 
+      const callStartTime = Date.now();
+      let timeoutHandle: NodeJS.Timeout | null = null;
+      const abortController = new AbortController();
+
       try {
-        const response = await ai.models.generateContent({
-          ...params,
-          model,
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(() => {
+            try {
+              abortController.abort();
+            } catch {}
+            const timeoutErr: any = new Error('generateContent timed out after 60s');
+            timeoutErr.name = 'TimeoutError';
+            timeoutErr.status = 504;
+            timeoutErr.code = 'DEADLINE_EXCEEDED';
+            reject(timeoutErr);
+          }, 60000);
         });
-        console.log(`[fallback] Pass ${pass}: ${model} answered successfully`);
+
+        const mergedConfig = {
+          ...(params.config || {}),
+          abortSignal: abortController.signal,
+          httpOptions: {
+            timeout: 60000,
+            ...(params.config?.httpOptions || {}),
+          },
+        };
+
+        const response = await Promise.race([
+          ai.models.generateContent({
+            ...params,
+            model,
+            config: mergedConfig,
+          }),
+          timeoutPromise,
+        ]);
+
+        const durationSec = ((Date.now() - callStartTime) / 1000).toFixed(1);
+        console.log(`[fallback] Pass ${pass}: ${model} answered in ${durationSec} s`);
+        modelCooldownMap.delete(model);
         return { response, modelUsed: model };
       } catch (err: any) {
         lastError = err;
+        const durationSec = ((Date.now() - callStartTime) / 1000).toFixed(1);
         const rawStatus = err?.status ?? err?.code ?? err?.statusCode;
         const numStatus = Number(rawStatus);
         const codeStr = String(rawStatus || '').toUpperCase();
         const msg = String(err?.message || '');
+        const msgLower = msg.toLowerCase();
 
-        // Directive 6 Error Recovery Matrix: Only 503, 429, 404, and 500 are recoverable
+        // 3. Billing and permission errors are not "busy" (Requirement 3)
+        // If a model call fails with HTTP 402 or 403, or the error message mentions
+        // billing, credits or prepayment, stop the ladder and don't retry.
+        // Check this before the recoverable check, because these errors can also contain RESOURCE_EXHAUSTED.
+        const isBillingOrPermission =
+          numStatus === 402 ||
+          numStatus === 403 ||
+          msgLower.includes('billing') ||
+          msgLower.includes('credit') ||
+          msgLower.includes('prepayment') ||
+          msgLower.includes('pre-payment');
+
+        if (isBillingOrPermission) {
+          (err as any).isBillingOrPermission = true;
+          const status = rawStatus || 403;
+          console.log(`[fallback] Pass ${pass}: ${model} failed after ${durationSec} s (${status}: ${err?.message || err}) -> billing/permission error, stopping fallback`);
+          throw err;
+        }
+
+        // 1. Model cooldown: When a model fails with 429 / RESOURCE_EXHAUSTED
+        const is429orResourceExhausted =
+          numStatus === 429 ||
+          codeStr === 'RESOURCE_EXHAUSTED' ||
+          msg.includes('429') ||
+          msg.includes('RESOURCE_EXHAUSTED');
+
+        if (is429orResourceExhausted) {
+          const failTime = Date.now();
+          let cooldownDurationMs = 60 * 1000; // default 60 seconds
+          if (msg.includes('PerDay')) {
+            cooldownDurationMs = 60 * 60 * 1000; // 60 minutes
+          } else {
+            const retryDelay = extractRetryDelayMs(err);
+            if (retryDelay !== null && retryDelay > 0) {
+              cooldownDurationMs = retryDelay;
+            }
+          }
+          const cooldownUntil = failTime + cooldownDurationMs;
+          modelCooldownMap.set(model, cooldownUntil);
+        }
+
+        // 2. Recoverable check: timed-out calls count as recoverable
+        const isTimeout =
+          numStatus === 504 ||
+          codeStr === 'DEADLINE_EXCEEDED' ||
+          codeStr === 'ETIMEDOUT' ||
+          err?.name === 'TimeoutError' ||
+          msgLower.includes('timed out') ||
+          msgLower.includes('deadline_exceeded');
+
         const isRecoverable =
+          isTimeout ||
           [503, 429, 404, 500].includes(numStatus) ||
           ['UNAVAILABLE', 'RESOURCE_EXHAUSTED', 'NOT_FOUND', 'INTERNAL'].includes(codeStr) ||
           (
@@ -99,13 +241,17 @@ async function generateContentWithFallback(params: any): Promise<{ response: any
 
         if (!isRecoverable) {
           const status = rawStatus || (msg.includes('400') || msg.includes('INVALID_ARGUMENT') ? 400 : 'ERROR');
-          console.log(`[fallback] Pass ${pass}: ${model} failed (${status}: ${err?.message || err}) -> non-recoverable error, stopping fallback`);
+          console.log(`[fallback] Pass ${pass}: ${model} failed after ${durationSec} s (${status}: ${err?.message || err}) -> non-recoverable error, stopping fallback`);
           throw err;
         }
 
-        const status = rawStatus || 'RECOVERABLE_ERROR';
+        const status = rawStatus || (isTimeout ? '504 DEADLINE_EXCEEDED' : 'RECOVERABLE_ERROR');
         const nextModel = MODEL_LADDER[i + 1] || (pass < maxPasses ? `next pass in ${backoffDelays[pass - 1] / 1000}s` : 'exhausted');
-        console.log(`[fallback] Pass ${pass}: ${model} failed (${status}: ${err?.message || err}) -> trying ${nextModel}`);
+        console.log(`[fallback] Pass ${pass}: ${model} failed after ${durationSec} s (${status}: ${err?.message || err}) -> trying ${nextModel}`);
+      } finally {
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+        }
       }
     }
 
@@ -684,7 +830,7 @@ const recordFindingTool: FunctionDeclaration = {
       },
       userQuote: {
         type: Type.STRING,
-        description: "Direct quote or context provided by the employee.",
+        description: "The employee's own words, copied verbatim from their message (one or two sentences). Never empty.",
       },
       suggestedImprovement: {
         type: Type.STRING,
@@ -713,6 +859,27 @@ const summarizeSessionTool: FunctionDeclaration = {
     required: ['summary'],
   },
 };
+
+/**
+ * Reliability Fix 4: Fallback extractor for userQuote when empty after trimming.
+ * Stores employee's message from this turn (first 300 characters, cut at last full sentence if one exists).
+ */
+function extractFallbackUserQuote(turnMessage?: any): string {
+  if (!turnMessage || typeof turnMessage !== 'string') return '';
+  const trimmed = turnMessage.trim();
+  if (!trimmed) return '';
+  const first300 = trimmed.slice(0, 300);
+
+  const lastPeriod = first300.lastIndexOf('.');
+  const lastQuestion = first300.lastIndexOf('?');
+  const lastExclamation = first300.lastIndexOf('!');
+  const lastSentenceEnd = Math.max(lastPeriod, lastQuestion, lastExclamation);
+
+  if (lastSentenceEnd !== -1) {
+    return first300.slice(0, lastSentenceEnd + 1).trim();
+  }
+  return first300.trim();
+}
 
 /**
  * A standard's code is its leading token in the form LETTERS-number,
@@ -1223,6 +1390,11 @@ RULES
               existingFindingId,
             };
           } else {
+            let quote = typeof args?.userQuote === 'string' ? args.userQuote.trim() : '';
+            if (!quote) {
+              quote = extractFallbackUserQuote(message);
+            }
+
             const findingData = {
               findingId,
               sessionId,
@@ -1232,7 +1404,7 @@ RULES
               ishikawaCategory: category,
               severity,
               description: String(args?.description || '').slice(0, 2000),
-              userQuote: String(args?.userQuote || '').slice(0, 2000),
+              userQuote: quote.slice(0, 2000),
               suggestedImprovement: String(args?.suggestedImprovement || '').slice(0, 2000),
               relatedStandard: finalStandard,
               status: 'Pending',
@@ -1378,9 +1550,30 @@ RULES
     });
   } catch (err: any) {
     console.error('Chat endpoint error:', err);
+    const requestId = `req_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
     const rawStatus = err?.status ?? err?.code ?? err?.statusCode;
     const numStatus = Number(rawStatus);
     const msg = String(err?.message || '');
+    const msgLower = msg.toLowerCase();
+
+    // Reliability Fix 3: Billing and permission errors are not "busy"
+    const isBillingOrPermission =
+      err?.isBillingOrPermission ||
+      numStatus === 402 ||
+      numStatus === 403 ||
+      msgLower.includes('billing') ||
+      msgLower.includes('credit') ||
+      msgLower.includes('prepayment') ||
+      msgLower.includes('pre-payment');
+
+    if (isBillingOrPermission) {
+      return res.status(500).json({
+        error: 'The AI service is unavailable because of an account or billing problem. Please tell the administrator.',
+        code: 'AI_UNAVAILABLE',
+        requestId,
+      });
+    }
+
     const isBusy =
       numStatus === 503 ||
       numStatus === 429 ||
