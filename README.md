@@ -149,7 +149,7 @@ gcloud firestore databases create \
 ```
 
 ### Deploying Rules & Indexes via Firebase CLI
-To deploy rules and indexes to the named database using the Firebase CLI, target the named database in your `firebase.json` configuration block:
+The repository does not contain a `firebase.json` file by default. Create a `firebase.json` file in the repository root with the following configuration before running `firebase deploy` to target the named database:
 
 ```json
 {
@@ -302,7 +302,7 @@ Because `firestore.rules` enforces `allow write: if false;` on `/admins`, **the 
    - Collection ID: `admins`
    - Document ID: `<SUPER_ADMIN_UID>` (copy your exact UID from the in-app notice)
    - Field: `role` | Type: `string` | Value: `superadmin`
-5. Click **Verify Admin Access** in the application banner. The super administrator interface and consolidated audit tabs will immediately activate.
+5. Click **Re-verify Admin Status** in the application banner. The super administrator interface and consolidated audit tabs will immediately activate.
 
 ---
 
@@ -326,7 +326,9 @@ gcloud run deploy $SERVICE_NAME \
 > - `tsx` is listed under `dependencies` (not `devDependencies`) in `package.json`, ensuring that `npm start` (`tsx server.ts`) executes reliably in containerized environments when build packs prune development dependencies after `npm run build`.
 
 ### Updating an Existing Service (e.g., Published from AI Studio)
-If the application was previously published from AI Studio, update the existing Cloud Run service to reference the Secret Manager secret and configure `ADMIN_EMAIL`:
+If the application was previously published from AI Studio, update the existing Cloud Run service to reference the Secret Manager secret and configure `ADMIN_EMAIL`.
+
+> **Note on Update Flags**: Always use `--update-env-vars` and `--update-secrets` rather than `--set-env-vars` and `--set-secrets` on an existing service. The `--set-*` flags completely overwrite and replace all environment variables and secrets, which would delete variables AI Studio set (such as `APP_URL`), whereas `--update-*` flags safely merge and update the specified keys while preserving the rest.
 
 1. **Remove plain environment variable** (if a plain `GEMINI_API_KEY` was previously set):
    ```bash
@@ -336,11 +338,11 @@ If the application was previously published from AI Studio, update the existing 
      --project=$PROJECT_ID
    ```
 
-2. **Mount the Secret Manager secret and set environment variables**:
+2. **Mount the Secret Manager secret and update environment variables**:
    ```bash
    gcloud run services update $SERVICE_NAME \
-     --set-secrets GEMINI_API_KEY=GEMINI_API_KEY:latest \
-     --set-env-vars ADMIN_EMAIL="abasuel_250000002102@uic.edu.ph",NODE_ENV=production \
+     --update-secrets GEMINI_API_KEY=GEMINI_API_KEY:latest \
+     --update-env-vars ADMIN_EMAIL="abasuel_250000002102@uic.edu.ph",NODE_ENV=production \
      --region=$REGION \
      --project=$PROJECT_ID
    ```
@@ -390,9 +392,11 @@ If the application was previously published from AI Studio, update the existing 
 
 1. **Firebase Web API Key Hygiene**:
    - The `apiKey` located in `firebase-applet-config.json` is a public client identifier used to route requests to the Firebase project, not a secret credential.
+   - The browser Firebase SDK uses this key for both **Authentication** and **Cloud Firestore**.
    - When restricting this key in Google Cloud Console (**APIs & Services** $\rightarrow$ **Credentials**):
-     - Restrict by **API Restrictions only** (e.g., Identity Toolkit API, Token Service API).
+     - Restrict by **API Restrictions only**: The API restriction list must include at least **Identity Toolkit API**, **Token Service API**, and **Cloud Firestore API** (the Firebase APIs for browser keys).
      - **DO NOT** restrict by HTTP Referrer. The backend server invokes the Google Identity Toolkit REST endpoint (`accounts:lookup`) directly to verify user tokens without passing browser referrer headers. Restricting by HTTP referrer will break server-side token authentication.
+     - After restricting, test **Google Sign-In**, **starting an audit chat**, and viewing **My Findings** to verify both Auth and Firestore operations work smoothly.
 
 2. **Server-Side REST Authentication Model**:
    - The server code forwards the client's verified Bearer ID token directly in the `Authorization` header when querying Firestore via REST (`https://firestore.googleapis.com/v1/projects/.../databases/.../documents`).
