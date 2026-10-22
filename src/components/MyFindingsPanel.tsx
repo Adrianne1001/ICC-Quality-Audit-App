@@ -40,7 +40,7 @@ const SEVERITY_COLORS: Record<SeverityLevel, string> = {
 const STATUS_BADGES: Record<FindingStatus, { color: string; label: string }> = {
   Pending: { color: 'bg-amber-50 text-amber-800 border-amber-300', label: 'Pending Review' },
   Confirmed: { color: 'bg-emerald-50 text-emerald-800 border-emerald-300', label: 'Confirmed' },
-  Edited: { color: 'bg-blue-50 text-blue-800 border-blue-300', label: 'Edited by Employee' },
+  Edited: { color: 'bg-blue-50 text-blue-800 border-blue-300', label: 'Edited and confirmed by you' },
   Disputed: { color: 'bg-red-50 text-red-800 border-red-300', label: 'Disputed' },
 };
 
@@ -55,6 +55,7 @@ export const MyFindingsPanel: React.FC<MyFindingsPanelProps> = ({ onError }) => 
   const [editDesc, setEditDesc] = useState('');
   const [editRemedy, setEditRemedy] = useState('');
   const [editNote, setEditNote] = useState('');
+  const [editNoteError, setEditNoteError] = useState<string | null>(null);
 
   // Dispute Modal State
   const [disputingFinding, setDisputingFinding] = useState<AuditFinding | null>(null);
@@ -100,10 +101,17 @@ export const MyFindingsPanel: React.FC<MyFindingsPanelProps> = ({ onError }) => 
     setEditDesc(finding.description);
     setEditRemedy(finding.suggestedImprovement);
     setEditNote(finding.userEditNote || '');
+    setEditNoteError(null);
   };
 
   const handleSaveEdit = async () => {
     if (!user || !editingFinding) return;
+    const trimmedNote = editNote.trim();
+    if (trimmedNote.length < 5) {
+      setEditNoteError('Please provide at least 5 characters explaining what you changed, and why.');
+      return;
+    }
+    setEditNoteError(null);
     try {
       const docRef = doc(db, 'users', user.uid, 'findings', editingFinding.findingId);
       await updateDoc(
@@ -111,7 +119,7 @@ export const MyFindingsPanel: React.FC<MyFindingsPanelProps> = ({ onError }) => 
         stripUndefined({
           description: editDesc.trim(),
           suggestedImprovement: editRemedy.trim(),
-          userEditNote: editNote.trim(),
+          userEditNote: trimmedNote,
           status: 'Edited' as FindingStatus,
           updatedAt: new Date().toISOString(),
         })
@@ -311,7 +319,7 @@ export const MyFindingsPanel: React.FC<MyFindingsPanelProps> = ({ onError }) => 
                   </span>
 
                   <div className="flex items-center gap-2">
-                    {f.status !== 'Confirmed' && (
+                    {f.status !== 'Confirmed' && f.status !== 'Edited' && (
                       <button
                         onClick={() => handleConfirm(f)}
                         className="inline-flex items-center gap-1 px-3 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-medium rounded-lg border border-emerald-200 transition-colors"
@@ -380,15 +388,25 @@ export const MyFindingsPanel: React.FC<MyFindingsPanelProps> = ({ onError }) => 
 
           <div>
             <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
-              Note on your modification
+              What did you change, and why? <span className="text-red-500">*</span>
             </label>
             <input
               type="text"
               placeholder="e.g. Clarified the exact step in deployment where delay occurs"
               value={editNote}
-              onChange={(e) => setEditNote(e.target.value)}
-              className="w-full text-sm border border-slate-300 rounded-lg p-2.5 focus:ring-2 focus:ring-indigo-500"
+              onChange={(e) => {
+                setEditNote(e.target.value);
+                if (editNoteError && e.target.value.trim().length >= 5) {
+                  setEditNoteError(null);
+                }
+              }}
+              className={`w-full text-sm border ${
+                editNoteError ? 'border-red-500 ring-1 ring-red-500' : 'border-slate-300'
+              } rounded-lg p-2.5 focus:ring-2 focus:ring-indigo-500`}
             />
+            {editNoteError && (
+              <p className="text-xs text-red-600 mt-1 font-medium">{editNoteError}</p>
+            )}
           </div>
 
           <div className="flex justify-end gap-3 pt-3">
@@ -402,7 +420,7 @@ export const MyFindingsPanel: React.FC<MyFindingsPanelProps> = ({ onError }) => 
               onClick={handleSaveEdit}
               className="px-4 py-2 text-xs font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg shadow-xs"
             >
-              Save Changes
+              Save changes and confirm
             </button>
           </div>
         </div>

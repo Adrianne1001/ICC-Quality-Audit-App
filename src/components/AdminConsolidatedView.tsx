@@ -316,7 +316,9 @@ export const AdminConsolidatedView: React.FC<AdminConsolidatedViewProps> = ({ on
     };
   });
 
-  const maxCount = Math.max(...paretoData.map((d) => d.count), 5);
+  const maxCount = Math.max(...paretoData.map((d) => d.count), 1);
+  const step = Math.ceil(maxCount / 4);
+  const axisMax = step * 4;
 
   // Department x Severity Matrix Preparation
   const departments = Array.from(new Set(findings.map((f) => f.department || 'Company-wide'))).sort();
@@ -456,13 +458,14 @@ export const AdminConsolidatedView: React.FC<AdminConsolidatedViewProps> = ({ on
             <div className="min-w-[600px] h-72 relative">
               <svg className="w-full h-full" viewBox="0 0 650 260">
                 {/* Horizontal Grid lines */}
-                {[0, 25, 50, 75, 100].map((pct) => {
-                  const y = 220 - (pct / 100) * 180;
+                {[0, 1, 2, 3, 4].map((i) => {
+                  const pct = i * 25;
+                  const y = 220 - (i / 4) * 180;
                   return (
-                    <g key={pct}>
+                    <g key={i}>
                       <line x1="60" y1={y} x2="580" y2={y} stroke="#f1f5f9" strokeWidth="1" />
                       <text x="45" y={y + 4} fontSize="10" fill="#94a3b8" textAnchor="end">
-                        {Math.round((pct / 100) * maxCount)}
+                        {i * step}
                       </text>
                       <text x="590" y={y + 4} fontSize="10" fill="#f59e0b" textAnchor="start">
                         {pct}%
@@ -489,7 +492,7 @@ export const AdminConsolidatedView: React.FC<AdminConsolidatedViewProps> = ({ on
                 {paretoWithCumulative.map((item, idx) => {
                   const barWidth = 48;
                   const x = 85 + idx * 80;
-                  const barHeight = (item.count / maxCount) * 180;
+                  const barHeight = (item.count / axisMax) * 180;
                   const barY = 220 - barHeight;
 
                   return (

@@ -27,6 +27,7 @@ interface AuditChatProps {
   session: AuditSession;
   onSessionUpdated: (session: AuditSession) => void;
   onError: (errorMsg: string, retryFn?: () => void, hasInputIntact?: boolean, code?: string) => void;
+  onOpenFindings?: () => void;
 }
 
 const STAGES: { key: InterviewStage; label: string; desc: string }[] = [
@@ -38,7 +39,19 @@ const STAGES: { key: InterviewStage; label: string; desc: string }[] = [
   { key: 'Recap', label: 'Recap', desc: 'Consolidated audit synthesis' },
 ];
 
-export const AuditChat: React.FC<AuditChatProps> = ({ session, onSessionUpdated, onError }) => {
+const FINDING_STATUS_BADGES: Record<string, { color: string; label: string }> = {
+  Pending: { color: 'bg-amber-50 text-amber-800 border-amber-300', label: 'Pending Review' },
+  Confirmed: { color: 'bg-emerald-50 text-emerald-800 border-emerald-300', label: 'Confirmed' },
+  Edited: { color: 'bg-blue-50 text-blue-800 border-blue-300', label: 'Edited and confirmed by you' },
+  Disputed: { color: 'bg-red-50 text-red-800 border-red-300', label: 'Disputed' },
+};
+
+export const AuditChat: React.FC<AuditChatProps> = ({
+  session,
+  onSessionUpdated,
+  onError,
+  onOpenFindings,
+}) => {
   const { user, token } = useAuth();
   const [messages, setMessages] = useState<ChatInteraction[]>([]);
   const [inputMessage, setInputMessage] = useState('');
@@ -47,6 +60,7 @@ export const AuditChat: React.FC<AuditChatProps> = ({ session, onSessionUpdated,
   const [confirmEndModal, setConfirmEndModal] = useState(false);
   const [endingSession, setEndingSession] = useState(false);
   const [newFindingsAlert, setNewFindingsAlert] = useState<AuditFinding[]>([]);
+  const [sessionFindings, setSessionFindings] = useState<AuditFinding[]>([]);
 
   // Timer for slow AI replies while isSending is true (Directive: clear on end or unmount)
   useEffect(() => {
@@ -121,9 +135,26 @@ export const AuditChat: React.FC<AuditChatProps> = ({ session, onSessionUpdated,
       }
     );
 
+    // Subscribe to findings for this session (read them the same way MyFindingsPanel does)
+    const findingsColRef = collection(db, 'users', user.uid, 'findings');
+    const unsubFindings = onSnapshot(
+      findingsColRef,
+      (snapshot) => {
+        const items = snapshot.docs
+          .map((d) => d.data() as AuditFinding)
+          .filter((f) => f.sessionId === session.sessionId)
+          .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+        setSessionFindings(items);
+      },
+      (err) => {
+        console.error('Session findings listener error:', err);
+      }
+    );
+
     return () => {
       unsub();
       unsubSession();
+      unsubFindings();
     };
   }, [user, session.sessionId]);
 
@@ -513,15 +544,102 @@ export const AuditChat: React.FC<AuditChatProps> = ({ session, onSessionUpdated,
           </div>
         )}
 
-        {session.status === 'completed' && session.summary && (
-          <div className="mt-6 p-5 bg-emerald-50 border border-emerald-200 rounded-2xl text-slate-800">
-            <div className="flex items-center gap-2 text-emerald-800 font-semibold text-sm mb-2">
+        {session.status === 'completed' && (
+          <div className="mt-6 p-5 bg-emerald-50 border border-emerald-200 rounded-2xl text-slate-800 space-y-4">
+            <div className="flex items-center gap-2 text-emerald-800 font-semibold text-sm">
               <CheckCircle2 className="w-5 h-5 text-emerald-600" />
-              <span>Audit Session Complete &bull; Consolidated Summary</span>
+              <span>Audit Session Complete</span>
             </div>
-            <div className="bg-white/70 p-4 rounded-xl border border-emerald-100">
-              <SafeMarkdown content={session.summary} className="text-xs text-slate-700 leading-relaxed" />
+
+            {/* Findings Review Section */}
+            <div className="bg-white/80 p-4 rounded-xl border border-emerald-200/70 space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="font-bold text-slate-900 text-xs sm:text-sm">
+                  Your findings from this session ({sessionFindings.length})
+                </h4>
+              </div>
+
+              {sessionFindings.length > 0 ? (
+                <ol className="space-y-2">
+                  {sessionFindings.map((f, idx) => {
+                    const statusBadge =
+                      FINDING_STATUS_BADGES[f.status] || FINDING_STATUS_BADGES.Pending;
+
+                    return (
+                      <li
+                        key={f.findingId || idx}
+                        className="bg-white border border-slate-200 rounded-xl p-3 text-xs shadow-2xs space-y-1.5"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-bold text-slate-700">{idx + 1}.</span>
+                            <span className="px-2 py-0.5 bg-purple-50 text-purple-700 border border-purple-200 rounded-md font-semibold text-[10px]">
+                              {f.ishikawaCategory} (6M)
+                            </span>
+                            {f.relatedStandard && f.relatedStandard !== 'No matching standard' ? (
+                              <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-md font-mono text-[10px]">
+                                {f.relatedStandard}
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 bg-slate-100 text-slate-600 border border-slate-200 rounded-md font-mono text-[10px]">
+                                No matching standard
+                              </span>
+                            )}
+                          </div>
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${statusBadge.color}`}
+                          >
+                            {statusBadge.label}
+                          </span>
+                        </div>
+                        <p className="text-slate-800 leading-relaxed pl-4 text-xs font-medium">
+                          {f.description}
+                        </p>
+                      </li>
+                    );
+                  })}
+                </ol>
+              ) : (
+                <p className="text-xs text-slate-500 italic">No findings recorded during this session.</p>
+              )}
+
+              {/* Review Call-to-Action or Completion Message */}
+              {sessionFindings.filter((f) => f.status === 'Pending').length > 0 ? (
+                <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-950">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>
+                      {sessionFindings.filter((f) => f.status === 'Pending').length} finding
+                      {sessionFindings.filter((f) => f.status === 'Pending').length === 1 ? '' : 's'} still
+                      need your review. They stay Pending until you Confirm, Edit or Dispute them.
+                    </span>
+                  </div>
+                  {onOpenFindings && (
+                    <button
+                      onClick={onOpenFindings}
+                      className="inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg shadow-xs transition-colors shrink-0 text-xs"
+                    >
+                      <span>Review my findings</span>
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div className="mt-3 p-3 bg-emerald-100/70 border border-emerald-200 rounded-xl flex items-center gap-2 text-xs text-emerald-900 font-semibold">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
+                  <span>All findings reviewed. Thank you!</span>
+                </div>
+              )}
             </div>
+
+            {/* Summary */}
+            {session.summary && (
+              <div className="space-y-1.5">
+                <div className="text-xs font-semibold text-emerald-900">Consolidated Summary</div>
+                <div className="bg-white/70 p-4 rounded-xl border border-emerald-100">
+                  <SafeMarkdown content={session.summary} className="text-xs text-slate-700 leading-relaxed" />
+                </div>
+              </div>
+            )}
           </div>
         )}
 

@@ -307,6 +307,7 @@ function MainApp() {
                     session={activeSession}
                     onSessionUpdated={(s) => setActiveSession(s)}
                     onError={showError}
+                    onOpenFindings={() => setHubSubTab('findings')}
                   />
                 ) : (
                   <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-12 text-center max-w-2xl mx-auto space-y-4">
