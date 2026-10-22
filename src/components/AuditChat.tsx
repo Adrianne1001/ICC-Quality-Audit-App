@@ -43,9 +43,38 @@ export const AuditChat: React.FC<AuditChatProps> = ({ session, onSessionUpdated,
   const [messages, setMessages] = useState<ChatInteraction[]>([]);
   const [inputMessage, setInputMessage] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [confirmEndModal, setConfirmEndModal] = useState(false);
   const [endingSession, setEndingSession] = useState(false);
   const [newFindingsAlert, setNewFindingsAlert] = useState<AuditFinding[]>([]);
+
+  // Timer for slow AI replies while isSending is true (Directive: clear on end or unmount)
+  useEffect(() => {
+    let timer: any = null;
+    if (isSending) {
+      setElapsedSeconds(0);
+      const startTime = Date.now();
+      timer = setInterval(() => {
+        setElapsedSeconds(Math.floor((Date.now() - startTime) / 1000));
+      }, 1000);
+    } else {
+      setElapsedSeconds(0);
+    }
+
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [isSending]);
+
+  const getWaitingText = (seconds: number) => {
+    if (seconds < 15) {
+      return 'Audit Agent analyzing processes and cross-referencing standards...';
+    }
+    if (seconds < 60) {
+      return `The AI service is busy. Retrying automatically... (${seconds} s)`;
+    }
+    return `Still retrying. Busy periods can take up to 3 minutes. Please keep this tab open and don't resend your message. (${seconds} s)`;
+  };
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -155,7 +184,27 @@ export const AuditChat: React.FC<AuditChatProps> = ({ session, onSessionUpdated,
         });
 
         if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
+          let errData: any = null;
+          let isJson = false;
+
+          const contentType = res.headers.get('content-type') || '';
+          if (contentType.includes('application/json')) {
+            try {
+              errData = await res.json();
+              isJson = true;
+            } catch {
+              isJson = false;
+            }
+          } else {
+            try {
+              const text = await res.text();
+              errData = JSON.parse(text);
+              isJson = true;
+            } catch {
+              isJson = false;
+            }
+          }
+
           console.error('Chat endpoint error response details:', res.status, errData);
 
           // SEC-03: Rate limit handling (429)
@@ -164,11 +213,17 @@ export const AuditChat: React.FC<AuditChatProps> = ({ session, onSessionUpdated,
             throw new Error(rateLimitMsg);
           }
 
+          // Treat HTTP 502, 503, 504 and non-JSON error responses as busy with Retry
           const isBusy =
+            res.status === 502 ||
             res.status === 503 ||
+            res.status === 504 ||
+            !isJson ||
             errData?.isBusy ||
             String(errData?.error || '').includes('busy') ||
-            String(errData?.error || '').includes('503');
+            String(errData?.error || '').includes('503') ||
+            String(errData?.error || '').includes('502') ||
+            String(errData?.error || '').includes('504');
 
           if (isBusy) {
             const busyErr = new Error('The AI service is busy right now. Your message is saved. Click Retry in a few seconds.');
@@ -184,7 +239,16 @@ export const AuditChat: React.FC<AuditChatProps> = ({ session, onSessionUpdated,
           throw errObj;
         }
 
-        const data = await res.json();
+        let data: any;
+        try {
+          data = await res.json();
+        } catch {
+          // Error responses that are not valid JSON are treated like busy
+          const busyErr = new Error('The AI service is busy right now. Your message is saved. Click Retry in a few seconds.');
+          (busyErr as any).isBusy = true;
+          throw busyErr;
+        }
+
         if (data.newFindings && data.newFindings.length > 0) {
           setNewFindingsAlert(data.newFindings);
         }
@@ -194,7 +258,9 @@ export const AuditChat: React.FC<AuditChatProps> = ({ session, onSessionUpdated,
         const isBusy =
           err?.isBusy ||
           err?.message?.includes('busy right now') ||
-          err?.message?.includes('503');
+          err?.message?.includes('503') ||
+          err?.message?.includes('502') ||
+          err?.message?.includes('504');
 
         const toastMsg = isBusy
           ? 'The AI service is busy right now. Your message is saved. Click Retry in a few seconds.'
@@ -441,8 +507,8 @@ export const AuditChat: React.FC<AuditChatProps> = ({ session, onSessionUpdated,
               <Bot className="w-4 h-4 animate-pulse" />
             </div>
             <div className="bg-white border border-slate-200 px-4 py-3 rounded-2xl rounded-tl-none text-xs text-slate-500 flex items-center gap-2">
-              <span className="inline-block w-2 h-2 rounded-full bg-indigo-500 animate-ping" />
-              <span>Audit Agent analyzing processes and cross-referencing standards...</span>
+              <span className="inline-block w-2 h-2 rounded-full bg-indigo-500 animate-ping shrink-0" />
+              <span className="leading-relaxed">{getWaitingText(elapsedSeconds)}</span>
             </div>
           </div>
         )}
